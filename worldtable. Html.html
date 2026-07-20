@@ -1,0 +1,1999 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WorldTable</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script>window.react = window.React;</script>
+<script crossorigin src="https://unpkg.com/lucide-react@0.436.0/dist/umd/lucide-react.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+</head>
+<body>
+<div id="root" style="font-family: sans-serif; padding: 16px; color: #666;">Loading…</div>
+
+<script type="text/plain" id="app-source">const { useState, useEffect, useMemo, useCallback, useRef } = React;
+const { ArrowRight, BarChart3, Beef, Bike, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Clock, Clock3, Coffee, CreditCard, Croissant, Eye, Fish, Flame, Flower2, Globe, IceCreamCone, KeyRound, Lock, LogIn, LogOut, Mail, MapPin, MessageCircle, MousePointerClick, Phone, PlayCircle, Sandwich, Search, Send, Shield, Soup, Sparkles, Star, Users, Utensils, UtensilsCrossed, Wine, X, XCircle } = LucideReact;
+
+function FontStyles() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
+      .wt-root { font-family: 'Work Sans', sans-serif; -webkit-font-smoothing: antialiased; }
+      .wt-root * { box-sizing: border-box; }
+      .wt-root input, .wt-root textarea, .wt-root select, .wt-root button { font-family: inherit; }
+      .font-display { font-family: 'Fraunces', serif; }
+      .font-mono { font-family: 'IBM Plex Mono', monospace; }
+      .font-sans { font-family: 'Work Sans', sans-serif; }
+      .text-9 { font-size: 9px; }
+      .text-10 { font-size: 10px; }
+      .text-11 { font-size: 11px; }
+      .minw-200 { min-width: 200px; }
+      .btn-primary {
+        font-family: 'Fraunces', serif;
+        font-weight: 600;
+        font-size: 0.875rem;
+        padding: 0.625rem 0;
+        display: flex; align-items: center; justify-content: center; gap: 0.375rem;
+        background-color: #1C1B19; color: #F6F1E7; border: 2px solid #1C1B19;
+        width: 100%; cursor: pointer;
+      }
+      .btn-primary:hover { opacity: 0.92; }
+      .input-field {
+        padding: 0.625rem 0.75rem; font-size: 0.875rem; width: 100%;
+        border: 2px solid #1C1B19; background-color: #fff;
+      }
+      .input-field:focus { outline: none; box-shadow: 0 0 0 2px rgba(42,74,107,0.2); }
+    `}</style>
+  );
+}
+
+// Demo-only client-side helpers.
+// NOTE: This app has no backend. Hashing here only avoids storing/displaying
+// plaintext passwords in memory/devtools during the demo — it is NOT real
+// authentication security. A production version must verify credentials on
+// a server and never ship an admin password (hashed or not) in the client bundle.
+async function sha256Hex(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const normalizeEmail = (email) => email.trim().toLowerCase();
+
+
+// Storage adapter.
+//
+// In the Claude artifact host, `window.storage` gives real, genuine
+// persistence across sessions (per-user and shared). When this project runs
+// standalone (e.g. `npm run dev`, or once you connect a real backend), there
+// is no `window.storage`, so we fall back to `localStorage` wrapped in the
+// same async shape. Swap `localFallback` for real API calls when you add a
+// server — every call site in the app already awaits these functions, so the
+// rest of the codebase doesn't need to change.
+const hasArtifactStorage = () => typeof window !== "undefined" && !!window.storage;
+
+const localFallback = {
+  async get(key, shared = false) {
+    const raw = localStorage.getItem((shared ? "shared:" : "priv:") + key);
+    if (raw === null) throw new Error("not found");
+    return { key, value: raw, shared };
+  },
+  async set(key, value, shared = false) {
+    localStorage.setItem((shared ? "shared:" : "priv:") + key, value);
+    return { key, value, shared };
+  },
+  async delete(key, shared = false) {
+    localStorage.removeItem((shared ? "shared:" : "priv:") + key);
+    return { key, deleted: true, shared };
+  },
+  async list(prefix = "", shared = false) {
+    const ns = shared ? "shared:" : "priv:";
+    const keys = Object.keys(localStorage)
+      .filter((k) => k.startsWith(ns + prefix))
+      .map((k) => k.slice(ns.length));
+    return { keys, prefix, shared };
+  },
+};
+
+async function storageGet(key, shared = false) {
+  try {
+    const backend = hasArtifactStorage() ? window.storage : localFallback;
+    const res = await backend.get(key, shared);
+    return res ? JSON.parse(res.value) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function storageSet(key, value, shared = false) {
+  const backend = hasArtifactStorage() ? window.storage : localFallback;
+  try {
+    await backend.set(key, JSON.stringify(value), shared);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function storageList(prefix = "", shared = false) {
+  try {
+    const backend = hasArtifactStorage() ? window.storage : localFallback;
+    const res = await backend.list(prefix, shared);
+    return res ? res.keys : [];
+  } catch {
+    return [];
+  }
+}
+
+
+// Haversine distance in km between two lat/lng points.
+function distanceKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Wraps the browser geolocation API in a promise. Resolves null if denied,
+// unsupported, or the iframe sandbox blocks it — callers should treat "near
+// me" as unavailable rather than erroring.
+function getBrowserLocation() {
+  return new Promise((resolve) => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      resolve(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => resolve(null),
+      { timeout: 5000 }
+    );
+  });
+}
+
+// "Open now" based on the restaurant's daily openMin/closeMin (minutes from
+// midnight) and the visitor's local time. Demo simplification: same hours
+// every day of the week.
+function isOpenNow(restaurant, now = new Date()) {
+  const minutesNow = now.getHours() * 60 + now.getMinutes();
+  return minutesNow >= restaurant.openMin && minutesNow <= restaurant.closeMin;
+}
+
+
+// Minimal hash-based router — no dependency needed, works in the artifact
+// sandbox (no server-side routes required) and in a normal static deploy.
+// Routes used by this app: "#/", "#/owner", "#/login", "#/admin".
+// Query params on "#/" (e.g. "#/?cuisine=turks&q=foo") are preserved so
+// filtered views are shareable/bookmarkable.
+function useHashRoute() {
+  const parse = () => {
+    const hash = window.location.hash.replace(/^#/, "") || "/";
+    const [path, queryString] = hash.split("?");
+    return { path: path || "/", params: new URLSearchParams(queryString || "") };
+  };
+
+  const [route, setRoute] = useState(parse);
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(parse());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const navigate = useCallback((path, params) => {
+    const qs = params ? new URLSearchParams(params).toString() : "";
+    window.location.hash = qs ? `${path}?${qs}` : path;
+  }, []);
+
+  return [route, navigate];
+}
+
+
+// ---------- Design tokens ----------
+const PAPER = "#F6F1E7";
+const INK = "#1C1B19";
+const BRICK = "#A8462F";
+const DELFT = "#2A4A6B";
+const CANAL = "#4F7A72";
+const GOLD = "#C79A3D";
+
+
+const CUISINES = [
+  { id: "turks", name: { nl: "Turks", en: "Turkish", ar: "تركي", tr: "Türk", es: "Turca" }, icon: Beef, color: BRICK },
+  { id: "italiaans", name: { nl: "Italiaans", en: "Italian", ar: "إيطالي", tr: "İtalyan", es: "Italiana" }, icon: UtensilsCrossed, color: DELFT },
+  { id: "chinees", name: { nl: "Chinees", en: "Chinese", ar: "صيني", tr: "Çin", es: "China" }, icon: Soup, color: CANAL },
+  { id: "indiaas", name: { nl: "Indiaas", en: "Indian", ar: "هندي", tr: "Hint", es: "India" }, icon: Flame, color: GOLD },
+  { id: "mexicaans", name: { nl: "Mexicaans", en: "Mexican", ar: "مكسيكي", tr: "Meksika", es: "Mexicana" }, icon: Flame, color: BRICK },
+  { id: "mediterraan", name: { nl: "Mediterraan", en: "Mediterranean", ar: "متوسطي", tr: "Akdeniz", es: "Mediterránea" }, icon: Fish, color: CANAL },
+  { id: "japans", name: { nl: "Japans", en: "Japanese", ar: "ياباني", tr: "Japon", es: "Japonesa" }, icon: Fish, color: DELFT },
+  { id: "midden_oosten", name: { nl: "Midden-Oosters", en: "Middle Eastern", ar: "شرق أوسطي", tr: "Orta Doğu", es: "Oriente Medio" }, icon: Sandwich, color: GOLD },
+  { id: "nederlands", name: { nl: "Nederlands", en: "Dutch", ar: "هولندي", tr: "Hollanda", es: "Holandesa" }, icon: Croissant, color: BRICK },
+  { id: "zeevruchten", name: { nl: "Zeevruchten", en: "Seafood", ar: "مأكولات بحرية", tr: "Deniz Mahsulleri", es: "Mariscos" }, icon: Fish, color: CANAL },
+  { id: "grill", name: { nl: "Grill", en: "Grill", ar: "مشاوي", tr: "Izgara", es: "Parrilla" }, icon: Flame, color: BRICK },
+  { id: "theehuis", name: { nl: "Theehuis", en: "Tea house", ar: "بيت شاي", tr: "Çay Evi", es: "Casa de té" }, icon: Coffee, color: GOLD },
+  { id: "wijnbar", name: { nl: "Wijnbar", en: "Wine bar", ar: "بار نبيذ", tr: "Şarap Barı", es: "Bar de vinos" }, icon: Wine, color: DELFT },
+  { id: "bakkerij", name: { nl: "Bakkerij & Dessert", en: "Bakery & Dessert", ar: "مخبوزات وحلويات", tr: "Fırın & Tatlı", es: "Panadería y postres" }, icon: IceCreamCone, color: GOLD },
+];
+
+
+// openMin/closeMin are minutes-from-midnight, used for the "open now" filter.
+// lat/lng are approximate city-center coordinates, used for "near me" sorting.
+const RESTAURANTS = [
+  {
+    id: 1, cuisine: "turks", city: "Amsterdam", color: BRICK, rating: 4.8, reviewCount: 128,
+    name: "Sultan's Table", address: "Nieuwmarkt 12, Amsterdam",
+    hours: "12:00 – 22:30", openMin: 12 * 60, closeMin: 22 * 60 + 30,
+    priceRange: 2, dietary: ["halal"],
+    lat: 52.3676, lng: 4.9010,
+    phone: "+31201234567", whatsapp: "31201234567", email: "info@sultanstable.nl", website: "sultanstable.nl",
+    menu: ["Adana kebab — €16.50", "Mercimek çorbası — €6.00", "Baklava — €5.50"],
+    description: "Familiebedrijf sinds 2012, houtskoolgrill en huisgemaakte baklava. Elke avond live brood bakken in de oven.",
+    photoCount: 6, hasVideo: true,
+    reviews: [{ name: "Emma", text: "Best kebab in the city, very friendly staff." }],
+  },
+  {
+    id: 2, cuisine: "italiaans", city: "Rotterdam", color: DELFT, rating: 4.3, reviewCount: 76,
+    name: "Trattoria Del Porto", address: "Witte de Withstraat 45, Rotterdam",
+    hours: "17:00 – 23:00", openMin: 17 * 60, closeMin: 23 * 60,
+    priceRange: 3, dietary: ["vegetarian-friendly"],
+    lat: 51.9172, lng: 4.4760,
+    phone: "+31102345678", whatsapp: "31102345678", email: "ciao@delporto.nl", website: "trattoriadelporto.nl",
+    menu: ["Pizza Margherita — €13.00", "Tagliatelle al ragù — €17.50", "Tiramisù — €7.00"],
+    description: "Wood-fired pizza and fresh pasta made daily by a Napoli-trained chef, right on the water.",
+    photoCount: 4,
+    reviews: [],
+  },
+  {
+    id: 3, cuisine: "japans", city: "Den Haag", color: DELFT, rating: 4.9, reviewCount: 54, isNew: true,
+    name: "Sakura Sushi Bar", address: "Dr. Lelykade 88, Den Haag",
+    hours: "12:00 – 21:00", openMin: 12 * 60, closeMin: 21 * 60,
+    priceRange: 3, dietary: ["pescatarian"],
+    lat: 52.0980, lng: 4.2760,
+    phone: "+31703456789", whatsapp: "31703456789", email: "hallo@sakura.nl", website: "sakurasushibar.nl",
+    menu: ["Sushi set — €22.00", "Ramen — €14.50", "Mochi — €6.00"],
+    description: "Omakase-style counter, fish flown in three times a week from Tsukiji.",
+    photoCount: 8, hasVideo: true,
+    reviews: [{ name: "Julia", text: "Fresh fish, calm atmosphere, worth the trip." }],
+  },
+  {
+    id: 4, cuisine: "indiaas", city: "Utrecht", color: GOLD, rating: 4.4, reviewCount: 41,
+    name: "Spice Route", address: "Oudegracht 210, Utrecht",
+    hours: "13:00 – 22:00", openMin: 13 * 60, closeMin: 22 * 60,
+    priceRange: 2, dietary: ["vegan", "vegetarian-friendly"],
+    lat: 52.0907, lng: 5.1150,
+    phone: "+31304567890", whatsapp: "31304567890", email: "info@spiceroute.nl", website: "spiceroute.nl",
+    menu: ["Butter chicken — €17.00", "Naan — €3.50", "Mango lassi — €4.00"],
+    description: "Family recipes from Kerala and Punjab, spice blends ground fresh in-house every morning.",
+    photoCount: 5,
+    reviews: [],
+  },
+  {
+    id: 5, cuisine: "theehuis", city: "Amsterdam", color: GOLD, rating: 4.9, reviewCount: 33,
+    name: "Lale Theehuis", address: "Haarlemmerstraat 33, Amsterdam",
+    hours: "09:00 – 19:00", openMin: 9 * 60, closeMin: 19 * 60,
+    priceRange: 1, dietary: ["vegan", "vegetarian-friendly"],
+    lat: 52.3850, lng: 4.8900,
+    phone: "+31205678901", whatsapp: "31205678901", email: "lale@theehuis.nl", website: "laletheehuis.nl",
+    menu: ["Turkse thee — €2.50", "Simit — €3.00", "Künefe — €6.50"],
+    description: "A quiet corner off the tourist path, brewed the way it's done back home.",
+    photoCount: 3,
+    reviews: [{ name: "Sofia", text: "Cosy spot, lovely tea, highly recommend." }],
+  },
+  {
+    id: 6, cuisine: "mexicaans", city: "Utrecht", color: BRICK, rating: 4.1, reviewCount: 19, isNew: true,
+    name: "Casa Chili", address: "Nachtegaalstraat 17, Utrecht",
+    hours: "16:00 – 23:00", openMin: 16 * 60, closeMin: 23 * 60,
+    priceRange: 2, dietary: ["vegetarian-friendly"],
+    lat: 52.0850, lng: 5.1300,
+    phone: "+31306789012", whatsapp: "31306789012", email: "hola@casachili.nl", website: "casachili.nl",
+    menu: ["Tacos al pastor — €12.00", "Guacamole — €6.50", "Churros — €5.00"],
+    description: "Street-food style tacos, salsas made fresh every morning, weekend live mariachi.",
+    photoCount: 7, hasVideo: true,
+    reviews: [],
+  },
+];
+
+
+const EMAIL_TEMPLATES = {
+  nl: { subject: "Je lidmaatschap is goedgekeurd — welkom bij WorldTable!",
+    body: (name) => `Hoi ${name},\n\nJe WorldTable-lidmaatschap is goedgekeurd. Je restaurant is nu zichtbaar voor toeristen van over de hele wereld.\n\nLog in op je dashboard om je menu, foto's en contactgegevens bij te werken.\n\nHet WorldTable-team` },
+  en: { subject: "Your membership is approved — welcome to WorldTable!",
+    body: (name) => `Hi ${name},\n\nYour WorldTable membership has been approved. Your restaurant is now visible to tourists from around the world.\n\nLog in to your dashboard to update your menu, photos, and contact details.\n\nThe WorldTable Team` },
+  ar: { subject: "تمت الموافقة على عضويتك — مرحبًا بك في WorldTable!",
+    body: (name) => `مرحبًا ${name}،\n\nتمت الموافقة على عضويتك في WorldTable. أصبح مطعمك الآن مرئيًا للسياح من جميع أنحاء العالم.\n\nسجّل الدخول إلى لوحتك لتحديث القائمة والصور وبيانات التواصل.\n\nفريق WorldTable` },
+  tr: { subject: "Üyeliğiniz onaylandı — WorldTable'a hoş geldiniz!",
+    body: (name) => `Merhaba ${name},\n\nWorldTable üyeliğiniz onaylandı. Restoranınız artık dünyanın her yerinden turiste görünür durumda.\n\nPanelinize giriş yaparak menünüzü, fotoğraflarınızı ve iletişim bilgilerinizi güncelleyebilirsiniz.\n\nWorldTable Ekibi` },
+  es: { subject: "Tu membresía ha sido aprobada — ¡bienvenido a WorldTable!",
+    body: (name) => `Hola ${name},\n\nTu membresía en WorldTable ha sido aprobada. Tu restaurante ya es visible para turistas de todo el mundo.\n\nInicia sesión en tu panel para actualizar tu menú, fotos y datos de contacto.\n\nEl equipo de WorldTable` },
+};
+
+
+const STRINGS = {
+  nl: {
+    dir: "ltr", brand: "WorldTable",
+    nav_discover: "Ontdekken", nav_owner: "Voor eigenaren",
+    hero_title: "Vind een tafel, geen verrassingen.",
+    hero_subtitle: "Alle keukens van de wereld, op één plek — menu, adres, tijden en hoe je ze rechtstreeks bereikt.",
+    search_placeholder: "Zoek op keuken of stad…",
+    cat_all: "Alles",
+    new_title: "Nieuw op WorldTable",
+    ads_label: "Advertentie",
+    ad_bike_title: "Fiets huren zoals een local",
+    ad_bike_body: "Ontdek de stad op de Nederlandse manier. Ophalen bij elk station, hele dag huur.",
+    ad_bike_cta: "Bekijk aanbod",
+    section_title: "Restaurants in Nederland",
+    view_menu: "Bekijk menu", hide_menu: "Verberg menu",
+    reviews_title: "Beoordelingen", reviews_none: "Nog geen beoordelingen.",
+    about_title: "Over dit restaurant", gallery_title: "Foto's", watch_video: "Bekijk video",
+    form_description: "Vertel over je restaurant…", form_photos_note: "Foto's uploaden kan na aanmelding via je dashboard.", form_video: "Videolink (YouTube, optioneel)",
+    review_name: "Je naam", review_text: "Je ervaring…",
+    review_submit: "Versturen",
+    contact_call: "Bel", contact_whatsapp: "WhatsApp", contact_email: "E-mail", contact_website: "Website",
+    owner_title: "Zet je restaurant op de kaart",
+    owner_subtitle: "Toeristen zoeken hier vooraf op menu, adres en tijden. Voeg elke keuken ter wereld toe en laat klanten je bereiken via elk kanaal.",
+    cuisine_label: "Keuken", cuisine_other: "Anders, namelijk…",
+    plan_basic: "Vermelding", plan_basic_price: "€19/maand",
+    plan_basic_f1: "Naam, adres, openingstijden", plan_basic_f2: "Telefoon, WhatsApp, e-mail, website", plan_basic_f3: "Menu (tekst) + beoordelingen",
+    why_title: "Waarom WorldTable",
+    why_body: "Geen ranglijst, geen concurrentie tussen restaurants. Elk restaurant krijgt dezelfde zichtbaarheid — wij helpen alleen toeristen jou vinden.",
+    form_title: "Restaurant aanmelden",
+    form_name: "Restaurantnaam", form_city: "Stad", form_submit: "Aanvraag versturen",
+    footer_note: "Dit is een demo-gids. Een echt platform vereist bedrijfsregistratie, btw-facturatie en een echte betaalprovider voor vermeldingen.",
+    auth_login_title: "Inloggen", auth_signup_title: "Account aanmaken",
+    auth_email: "E-mailadres", auth_password: "Wachtwoord", auth_confirm_password: "Bevestig wachtwoord",
+    auth_business_name: "Restaurantnaam",
+    auth_login_button: "Inloggen", auth_signup_button: "Account aanmaken",
+    auth_switch_to_signup: "Nog geen account? Registreren", auth_switch_to_login: "Al een account? Inloggen",
+    auth_forgot_password: "Wachtwoord vergeten?",
+    auth_reset_title: "Wachtwoord opnieuw instellen",
+    auth_reset_body: "Vul je e-mail in. In een echt systeem ontvang je een resetlink per e-mail — hier tonen we direct een code voor de demo.",
+    auth_reset_send: "Verstuur code",
+    auth_reset_code_sent: "Democode:", 
+    auth_reset_code_label: "Voer de code in", auth_reset_new_password: "Nieuw wachtwoord",
+    auth_reset_submit: "Wachtwoord wijzigen", auth_reset_success: "Wachtwoord gewijzigd. Je kunt nu inloggen.",
+    auth_back_to_login: "Terug naar inloggen",
+    auth_error_mismatch: "Wachtwoorden komen niet overeen.", auth_error_exists: "Dit e-mailadres is al geregistreerd.",
+    auth_error_invalid: "Ongeldige inloggegevens.", auth_error_code: "Onjuiste code.",
+    auth_logout: "Uitloggen", auth_dashboard_title: "Mijn restaurant",
+    auth_welcome: "Welkom terug",
+    status_pending_title: "Aanvraag in behandeling",
+    status_pending_body: "We controleren je gegevens. Dit duurt normaal 1-2 werkdagen.",
+    status_approved_title: "Lidmaatschap goedgekeurd",
+    status_approved_body: "Je restaurant is zichtbaar voor bezoekers van WorldTable.",
+    admin_login_title: "Adminlogin", admin_password_placeholder: "Wachtwoord", admin_login_button: "Inloggen",
+    admin_error: "Onjuist wachtwoord.", admin_back: "Terug naar site",
+    admin_title: "Adminpaneel", admin_stats_pending: "In behandeling", admin_stats_approved: "Goedgekeurd",
+    admin_pending_label: "Wacht op goedkeuring", admin_approved_label: "Goedgekeurde restaurants",
+    admin_no_owners: "Nog niemand hier.", admin_approve: "Goedkeuren", admin_revoke: "Intrekken",
+    admin_email_preview_title: "E-mail verzonden naar restaurant",
+    admin_email_to: "Aan", admin_email_subject: "Onderwerp", admin_email_close: "Sluiten",
+    filter_price: "Prijs", filter_price_1: "€", filter_price_2: "€€", filter_price_3: "€€€",
+    filter_dietary: "Dieet", filter_open_now: "Nu open", filter_near_me: "Bij mij in de buurt",
+    filter_near_me_denied: "Locatie niet beschikbaar", filter_clear: "Filters wissen",
+    dietary_vegan: "Veganistisch", dietary_vegetarian_friendly: "Vegetarisch-vriendelijk",
+    dietary_halal: "Halal", dietary_pescatarian: "Pescotarisch",
+    dashboard_title: "Jouw statistieken", dashboard_views: "Profielweergaven", dashboard_clicks: "Contactkliks",
+    dashboard_none: "Nog geen activiteit — kom terug zodra je vermelding live staat.",
+    checkout_title: "Upgraden naar Premium", checkout_demo_note: "Demo-afrekening — er wordt geen echte betaling verwerkt.",
+    checkout_card_label: "Kaartnummer", checkout_confirm: "Bevestigen (demo)",
+    checkout_success: "Demo-upgrade voltooid — er is niets in rekening gebracht.", checkout_cancel: "Annuleren",
+    consent_text: "We gebruiken lokale/gedeelde opslag om je voorkeuren en app-gegevens te onthouden. Geen tracking door derden.",
+    consent_accept: "Begrepen", consent_privacy_link: "Privacyverklaring",
+    spam_error: "Probeer het opnieuw.",
+  },
+  en: {
+    dir: "ltr", brand: "WorldTable",
+    nav_discover: "Discover", nav_owner: "For owners",
+    hero_title: "Find a table, no surprises.",
+    hero_subtitle: "Every cuisine in the world, in one place — menu, address, hours, and how to reach them directly.",
+    search_placeholder: "Search by cuisine or city…",
+    cat_all: "All",
+    new_title: "New on WorldTable",
+    ads_label: "Advertisement",
+    ad_bike_title: "Rent a bike like a local",
+    ad_bike_body: "See the city the Dutch way. Pick up at any station, hire by the day.",
+    ad_bike_cta: "View offers",
+    section_title: "Restaurants in the Netherlands",
+    view_menu: "View menu", hide_menu: "Hide menu",
+    reviews_title: "Reviews", reviews_none: "No reviews yet.",
+    about_title: "About this restaurant", gallery_title: "Photos", watch_video: "Watch video",
+    form_description: "Tell us about your restaurant…", form_photos_note: "You can upload photos from your dashboard after signing up.", form_video: "Video link (YouTube, optional)",
+    review_name: "Your name", review_text: "Your experience…",
+    review_submit: "Submit",
+    contact_call: "Call", contact_whatsapp: "WhatsApp", contact_email: "Email", contact_website: "Website",
+    owner_title: "Put your restaurant on the map",
+    owner_subtitle: "Tourists check here in advance for menu, address, and hours. Add any cuisine in the world and let customers reach you through any channel.",
+    cuisine_label: "Cuisine", cuisine_other: "Other, please specify…",
+    plan_basic: "Listing", plan_basic_price: "€19/month",
+    plan_basic_f1: "Name, address, hours", plan_basic_f2: "Phone, WhatsApp, email, website", plan_basic_f3: "Menu (text) + reviews",
+    why_title: "Why WorldTable",
+    why_body: "No rankings, no competition between restaurants. Every restaurant gets the same visibility — we simply help tourists find you.",
+    form_title: "List your restaurant",
+    form_name: "Restaurant name", form_city: "City", form_submit: "Send request",
+    footer_note: "This is a demo guide. A real platform requires business registration, VAT invoicing, and a real payment provider for listings.",
+    auth_login_title: "Log in", auth_signup_title: "Create account",
+    auth_email: "Email address", auth_password: "Password", auth_confirm_password: "Confirm password",
+    auth_business_name: "Restaurant name",
+    auth_login_button: "Log in", auth_signup_button: "Create account",
+    auth_switch_to_signup: "No account yet? Sign up", auth_switch_to_login: "Already have an account? Log in",
+    auth_forgot_password: "Forgot password?",
+    auth_reset_title: "Reset password",
+    auth_reset_body: "Enter your email. In a real system you'd receive a reset link by email — here we show a code directly for the demo.",
+    auth_reset_send: "Send code",
+    auth_reset_code_sent: "Demo code:",
+    auth_reset_code_label: "Enter the code", auth_reset_new_password: "New password",
+    auth_reset_submit: "Change password", auth_reset_success: "Password changed. You can now log in.",
+    auth_back_to_login: "Back to login",
+    auth_error_mismatch: "Passwords do not match.", auth_error_exists: "This email is already registered.",
+    auth_error_invalid: "Invalid login details.", auth_error_code: "Incorrect code.",
+    auth_logout: "Log out", auth_dashboard_title: "My restaurant",
+    auth_welcome: "Welcome back",
+    status_pending_title: "Application under review",
+    status_pending_body: "We're checking your details. This usually takes 1-2 business days.",
+    status_approved_title: "Membership approved",
+    status_approved_body: "Your restaurant is now visible to WorldTable visitors.",
+    admin_login_title: "Admin login", admin_password_placeholder: "Password", admin_login_button: "Log in",
+    admin_error: "Incorrect password.", admin_back: "Back to site",
+    admin_title: "Admin panel", admin_stats_pending: "Pending", admin_stats_approved: "Approved",
+    admin_pending_label: "Awaiting approval", admin_approved_label: "Approved restaurants",
+    admin_no_owners: "Nobody here yet.", admin_approve: "Approve", admin_revoke: "Revoke",
+    admin_email_preview_title: "Email sent to restaurant",
+    admin_email_to: "To", admin_email_subject: "Subject", admin_email_close: "Close",
+    filter_price: "Price", filter_price_1: "€", filter_price_2: "€€", filter_price_3: "€€€",
+    filter_dietary: "Dietary", filter_open_now: "Open now", filter_near_me: "Near me",
+    filter_near_me_denied: "Location unavailable", filter_clear: "Clear filters",
+    dietary_vegan: "Vegan", dietary_vegetarian_friendly: "Vegetarian-friendly",
+    dietary_halal: "Halal", dietary_pescatarian: "Pescatarian",
+    dashboard_title: "Your stats", dashboard_views: "Profile views", dashboard_clicks: "Contact clicks",
+    dashboard_none: "No activity yet — check back once your listing is live.",
+    checkout_title: "Upgrade to Premium", checkout_demo_note: "Demo checkout — no real payment is processed.",
+    checkout_card_label: "Card number", checkout_confirm: "Confirm (demo)",
+    checkout_success: "Demo upgrade complete — nothing was charged.", checkout_cancel: "Cancel",
+    consent_text: "We use local/shared storage to remember your preferences and app data. No third-party tracking.",
+    consent_accept: "Got it", consent_privacy_link: "Privacy notice",
+    spam_error: "Please try again.",
+  },
+  ar: {
+    dir: "rtl", brand: "WorldTable",
+    nav_discover: "اكتشف", nav_owner: "لأصحاب المطاعم",
+    hero_title: "اعثر على طاولة، بلا مفاجآت.",
+    hero_subtitle: "كل مطابخ العالم في مكان واحد — القائمة والعنوان وساعات العمل وطرق التواصل المباشر.",
+    search_placeholder: "ابحث حسب المطبخ أو المدينة…",
+    cat_all: "الكل",
+    new_title: "جديد على WorldTable",
+    ads_label: "إعلان",
+    ad_bike_title: "استأجر دراجة مثل السكان المحليين",
+    ad_bike_body: "اكتشف المدينة على الطريقة الهولندية. استلام من أي محطة، تأجير يومي.",
+    ad_bike_cta: "عرض الخيارات",
+    section_title: "مطاعم في هولندا",
+    view_menu: "عرض القائمة", hide_menu: "إخفاء القائمة",
+    reviews_title: "التقييمات", reviews_none: "لا توجد تقييمات بعد.",
+    about_title: "عن هذا المطعم", gallery_title: "صور", watch_video: "شاهد الفيديو",
+    form_description: "أخبرنا عن مطعمك…", form_photos_note: "يمكنك رفع الصور من لوحة التحكم بعد التسجيل.", form_video: "رابط فيديو (يوتيوب، اختياري)",
+    review_name: "اسمك", review_text: "تجربتك…",
+    review_submit: "إرسال",
+    contact_call: "اتصال", contact_whatsapp: "واتساب", contact_email: "بريد إلكتروني", contact_website: "الموقع",
+    owner_title: "أضف مطعمك إلى الخريطة",
+    owner_subtitle: "يبحث السياح هنا مسبقًا عن القائمة والعنوان وساعات العمل. أضف أي مطبخ في العالم ودع الزبائن يتواصلون معك عبر أي وسيلة.",
+    cuisine_label: "المطبخ", cuisine_other: "آخر، حدده…",
+    plan_basic: "إدراج", plan_basic_price: "١٩ يورو/شهر",
+    plan_basic_f1: "الاسم والعنوان وساعات العمل", plan_basic_f2: "هاتف، واتساب، بريد إلكتروني، موقع", plan_basic_f3: "القائمة (نص) + التقييمات",
+    why_title: "لماذا WorldTable",
+    why_body: "لا تصنيفات، لا منافسة بين المطاعم. كل مطعم يحصل على نفس الظهور — نحن فقط نساعد السياح على إيجادك.",
+    form_title: "سجّل مطعمك",
+    form_name: "اسم المطعم", form_city: "المدينة", form_submit: "إرسال الطلب",
+    footer_note: "هذا دليل تجريبي. أي منصة حقيقية تتطلب تسجيلًا تجاريًا وفوترة ضريبية ومزود دفع حقيقي للإدراجات.",
+    auth_login_title: "تسجيل الدخول", auth_signup_title: "إنشاء حساب",
+    auth_email: "البريد الإلكتروني", auth_password: "كلمة المرور", auth_confirm_password: "تأكيد كلمة المرور",
+    auth_business_name: "اسم المطعم",
+    auth_login_button: "تسجيل الدخول", auth_signup_button: "إنشاء حساب",
+    auth_switch_to_signup: "ليس لديك حساب؟ سجّل الآن", auth_switch_to_login: "لديك حساب بالفعل؟ سجّل الدخول",
+    auth_forgot_password: "نسيت كلمة المرور؟",
+    auth_reset_title: "إعادة تعيين كلمة المرور",
+    auth_reset_body: "أدخل بريدك الإلكتروني. في نظام حقيقي ستصلك رسالة بريدية — هنا نعرض الرمز مباشرة لأغراض العرض التجريبي.",
+    auth_reset_send: "إرسال الرمز",
+    auth_reset_code_sent: "رمز تجريبي:",
+    auth_reset_code_label: "أدخل الرمز", auth_reset_new_password: "كلمة مرور جديدة",
+    auth_reset_submit: "تغيير كلمة المرور", auth_reset_success: "تم تغيير كلمة المرور. يمكنك الآن تسجيل الدخول.",
+    auth_back_to_login: "العودة لتسجيل الدخول",
+    auth_error_mismatch: "كلمتا المرور غير متطابقتين.", auth_error_exists: "هذا البريد الإلكتروني مسجل بالفعل.",
+    auth_error_invalid: "بيانات دخول غير صحيحة.", auth_error_code: "رمز غير صحيح.",
+    auth_logout: "تسجيل الخروج", auth_dashboard_title: "مطعمي",
+    auth_welcome: "مرحبًا بعودتك",
+    status_pending_title: "الطلب قيد المراجعة",
+    status_pending_body: "نتحقق من بياناتك. عادة ما يستغرق هذا ١-٢ يوم عمل.",
+    status_approved_title: "تمت الموافقة على العضوية",
+    status_approved_body: "أصبح مطعمك مرئيًا الآن لزوار WorldTable.",
+    admin_login_title: "دخول المشرف", admin_password_placeholder: "كلمة المرور", admin_login_button: "تسجيل الدخول",
+    admin_error: "كلمة مرور غير صحيحة.", admin_back: "العودة إلى الموقع",
+    admin_title: "لوحة التحكم", admin_stats_pending: "قيد الانتظار", admin_stats_approved: "تمت الموافقة",
+    admin_pending_label: "بانتظار الموافقة", admin_approved_label: "المطاعم الموافق عليها",
+    admin_no_owners: "لا يوجد أحد هنا بعد.", admin_approve: "موافقة", admin_revoke: "إلغاء",
+    admin_email_preview_title: "تم إرسال بريد إلكتروني إلى المطعم",
+    admin_email_to: "إلى", admin_email_subject: "الموضوع", admin_email_close: "إغلاق",
+    filter_price: "السعر", filter_price_1: "€", filter_price_2: "€€", filter_price_3: "€€€",
+    filter_dietary: "النظام الغذائي", filter_open_now: "مفتوح الآن", filter_near_me: "بالقرب مني",
+    filter_near_me_denied: "الموقع غير متاح", filter_clear: "مسح الفلاتر",
+    dietary_vegan: "نباتي صرف", dietary_vegetarian_friendly: "مناسب للنباتيين",
+    dietary_halal: "حلال", dietary_pescatarian: "يشمل الأسماك",
+    dashboard_title: "إحصائياتك", dashboard_views: "مشاهدات الملف", dashboard_clicks: "نقرات التواصل",
+    dashboard_none: "لا يوجد نشاط بعد — تحقق مرة أخرى بعد نشر قائمتك.",
+    checkout_title: "الترقية إلى بريميوم", checkout_demo_note: "دفع تجريبي — لا تتم معالجة أي دفعة حقيقية.",
+    checkout_card_label: "رقم البطاقة", checkout_confirm: "تأكيد (تجريبي)",
+    checkout_success: "اكتملت الترقية التجريبية — لم يتم خصم أي مبلغ.", checkout_cancel: "إلغاء",
+    consent_text: "نستخدم التخزين المحلي/المشترك لتذكر تفضيلاتك وبيانات التطبيق. لا يوجد تتبع من طرف ثالث.",
+    consent_accept: "فهمت", consent_privacy_link: "إشعار الخصوصية",
+    spam_error: "يرجى المحاولة مرة أخرى.",
+  },
+  tr: {
+    dir: "ltr", brand: "WorldTable",
+    nav_discover: "Keşfet", nav_owner: "Restoran Sahipleri İçin",
+    hero_title: "Masanı bul, sürpriz olmasın.",
+    hero_subtitle: "Dünyanın tüm mutfakları tek yerde — menü, adres, çalışma saatleri ve doğrudan ulaşma yolları.",
+    search_placeholder: "Mutfak veya şehre göre ara…",
+    cat_all: "Tümü",
+    new_title: "WorldTable'e Yeni Katılanlar",
+    ads_label: "Reklam",
+    ad_bike_title: "Yerli gibi bisiklet kirala",
+    ad_bike_body: "Şehri Hollanda usulü keşfet. Her istasyondan teslim al, günlük kirala.",
+    ad_bike_cta: "Fırsatları gör",
+    section_title: "Hollanda'daki Restoranlar",
+    view_menu: "Menüyü gör", hide_menu: "Menüyü gizle",
+    reviews_title: "Yorumlar", reviews_none: "Henüz yorum yok.",
+    about_title: "Bu restoran hakkında", gallery_title: "Fotoğraflar", watch_video: "Videoyu izle",
+    form_description: "Restoranını anlat…", form_photos_note: "Kayıttan sonra panelinden fotoğraf yükleyebilirsin.", form_video: "Video linki (YouTube, isteğe bağlı)",
+    review_name: "Adınız", review_text: "Deneyiminiz…",
+    review_submit: "Gönder",
+    contact_call: "Ara", contact_whatsapp: "WhatsApp", contact_email: "E-posta", contact_website: "Web sitesi",
+    owner_title: "Restoranını haritaya koy",
+    owner_subtitle: "Turistler burada önceden menü, adres ve saatlere bakar. Dünyanın herhangi bir mutfağını ekleyin, müşteriler size her kanaldan ulaşsın.",
+    cuisine_label: "Mutfak", cuisine_other: "Diğer, belirtin…",
+    plan_basic: "Listeleme", plan_basic_price: "€19/ay",
+    plan_basic_f1: "İsim, adres, çalışma saatleri", plan_basic_f2: "Telefon, WhatsApp, e-posta, web sitesi", plan_basic_f3: "Menü (metin) + yorumlar",
+    why_title: "Neden WorldTable",
+    why_body: "Sıralama yok, restoranlar arasında yarış yok. Her restoran aynı görünürlüğü kazanır — biz sadece turistlerin seni bulmasına yardım ederiz.",
+    form_title: "Restoranını ekle",
+    form_name: "Restoran adı", form_city: "Şehir", form_submit: "Başvuru gönder",
+    footer_note: "Bu demo bir rehberdir. Gerçek bir platformda ticari kayıt, KDV faturalama ve listeleme için gerçek bir ödeme sağlayıcısı gerekir.",
+    auth_login_title: "Giriş Yap", auth_signup_title: "Hesap Oluştur",
+    auth_email: "E-posta adresi", auth_password: "Şifre", auth_confirm_password: "Şifreyi onayla",
+    auth_business_name: "Restoran adı",
+    auth_login_button: "Giriş yap", auth_signup_button: "Hesap oluştur",
+    auth_switch_to_signup: "Hesabın yok mu? Kayıt ol", auth_switch_to_login: "Zaten hesabın var mı? Giriş yap",
+    auth_forgot_password: "Şifremi unuttum",
+    auth_reset_title: "Şifreyi sıfırla",
+    auth_reset_body: "E-postanı gir. Gerçek sistemde e-posta ile sıfırlama linki gönderilir — burada demo amaçlı kodu doğrudan gösteriyoruz.",
+    auth_reset_send: "Kodu gönder",
+    auth_reset_code_sent: "Demo kodu:",
+    auth_reset_code_label: "Kodu gir", auth_reset_new_password: "Yeni şifre",
+    auth_reset_submit: "Şifreyi değiştir", auth_reset_success: "Şifre değiştirildi. Artık giriş yapabilirsin.",
+    auth_back_to_login: "Girişe dön",
+    auth_error_mismatch: "Şifreler eşleşmiyor.", auth_error_exists: "Bu e-posta zaten kayıtlı.",
+    auth_error_invalid: "Geçersiz giriş bilgileri.", auth_error_code: "Kod hatalı.",
+    auth_logout: "Çıkış yap", auth_dashboard_title: "Restoranım",
+    auth_welcome: "Tekrar hoş geldin",
+    status_pending_title: "Başvurunuz inceleniyor",
+    status_pending_body: "Bilgilerini kontrol ediyoruz. Bu genelde 1-2 iş günü sürer.",
+    status_approved_title: "Üyeliğiniz onaylandı",
+    status_approved_body: "Restoranın artık WorldTable ziyaretçilerine görünüyor.",
+    admin_login_title: "Yönetici Girişi", admin_password_placeholder: "Şifre", admin_login_button: "Giriş yap",
+    admin_error: "Şifre hatalı.", admin_back: "Siteye dön",
+    admin_title: "Yönetim Paneli", admin_stats_pending: "Bekleyen", admin_stats_approved: "Onaylı",
+    admin_pending_label: "Onay Bekleyenler", admin_approved_label: "Onaylı Restoranlar",
+    admin_no_owners: "Henüz kimse yok.", admin_approve: "Onayla", admin_revoke: "Onayı kaldır",
+    admin_email_preview_title: "Restorana gönderilen e-posta",
+    admin_email_to: "Kime", admin_email_subject: "Konu", admin_email_close: "Kapat",
+    filter_price: "Fiyat", filter_price_1: "€", filter_price_2: "€€", filter_price_3: "€€€",
+    filter_dietary: "Beslenme", filter_open_now: "Şu an açık", filter_near_me: "Yakınımda",
+    filter_near_me_denied: "Konum kullanılamıyor", filter_clear: "Filtreleri temizle",
+    dietary_vegan: "Vegan", dietary_vegetarian_friendly: "Vejetaryen dostu",
+    dietary_halal: "Helal", dietary_pescatarian: "Pesketaryen",
+    dashboard_title: "İstatistiklerin", dashboard_views: "Profil görüntülemeleri", dashboard_clicks: "İletişim tıklamaları",
+    dashboard_none: "Henüz etkinlik yok — ilanın yayına girdikten sonra tekrar bak.",
+    checkout_title: "Premium'a yükselt", checkout_demo_note: "Demo ödeme — gerçek bir ödeme işlenmez.",
+    checkout_card_label: "Kart numarası", checkout_confirm: "Onayla (demo)",
+    checkout_success: "Demo yükseltme tamamlandı — herhangi bir ücret alınmadı.", checkout_cancel: "Vazgeç",
+    consent_text: "Tercihlerini ve uygulama verilerini hatırlamak için yerel/paylaşılan depolama kullanıyoruz. Üçüncü taraf takibi yoktur.",
+    consent_accept: "Anladım", consent_privacy_link: "Gizlilik bildirimi",
+    spam_error: "Lütfen tekrar deneyin.",
+  },
+  es: {
+    dir: "ltr", brand: "WorldTable",
+    nav_discover: "Descubrir", nav_owner: "Para propietarios",
+    hero_title: "Encuentra una mesa, sin sorpresas.",
+    hero_subtitle: "Todas las cocinas del mundo en un solo lugar — menú, dirección, horarios y cómo contactarlos directamente.",
+    search_placeholder: "Busca por cocina o ciudad…",
+    cat_all: "Todo",
+    new_title: "Nuevo en WorldTable",
+    ads_label: "Anuncio",
+    ad_bike_title: "Alquila una bici como un local",
+    ad_bike_body: "Descubre la ciudad a la manera holandesa. Recógela en cualquier estación, alquiler por día.",
+    ad_bike_cta: "Ver ofertas",
+    section_title: "Restaurantes en los Países Bajos",
+    view_menu: "Ver menú", hide_menu: "Ocultar menú",
+    reviews_title: "Reseñas", reviews_none: "Aún no hay reseñas.",
+    about_title: "Sobre este restaurante", gallery_title: "Fotos", watch_video: "Ver video",
+    form_description: "Cuéntanos sobre tu restaurante…", form_photos_note: "Podrás subir fotos desde tu panel después de registrarte.", form_video: "Enlace de video (YouTube, opcional)",
+    review_name: "Tu nombre", review_text: "Tu experiencia…",
+    review_submit: "Enviar",
+    contact_call: "Llamar", contact_whatsapp: "WhatsApp", contact_email: "Correo", contact_website: "Sitio web",
+    owner_title: "Pon tu restaurante en el mapa",
+    owner_subtitle: "Los turistas consultan aquí de antemano el menú, la dirección y los horarios. Añade cualquier cocina del mundo y deja que los clientes te contacten por cualquier canal.",
+    cuisine_label: "Cocina", cuisine_other: "Otra, especifica…",
+    plan_basic: "Listado", plan_basic_price: "€19/mes",
+    plan_basic_f1: "Nombre, dirección, horarios", plan_basic_f2: "Teléfono, WhatsApp, correo, sitio web", plan_basic_f3: "Menú (texto) + reseñas",
+    why_title: "Por qué WorldTable",
+    why_body: "Sin rankings, sin competencia entre restaurantes. Cada restaurante recibe la misma visibilidad — solo ayudamos a los turistas a encontrarte.",
+    form_title: "Registra tu restaurante",
+    form_name: "Nombre del restaurante", form_city: "Ciudad", form_submit: "Enviar solicitud",
+    footer_note: "Esta es una guía de demostración. Una plataforma real requiere registro mercantil, facturación con IVA y un proveedor de pago real para los listados.",
+    auth_login_title: "Iniciar sesión", auth_signup_title: "Crear cuenta",
+    auth_email: "Correo electrónico", auth_password: "Contraseña", auth_confirm_password: "Confirmar contraseña",
+    auth_business_name: "Nombre del restaurante",
+    auth_login_button: "Iniciar sesión", auth_signup_button: "Crear cuenta",
+    auth_switch_to_signup: "¿Aún no tienes cuenta? Regístrate", auth_switch_to_login: "¿Ya tienes cuenta? Inicia sesión",
+    auth_forgot_password: "¿Olvidaste tu contraseña?",
+    auth_reset_title: "Restablecer contraseña",
+    auth_reset_body: "Introduce tu correo. En un sistema real recibirías un enlace por correo — aquí mostramos el código directamente para la demo.",
+    auth_reset_send: "Enviar código",
+    auth_reset_code_sent: "Código de demo:",
+    auth_reset_code_label: "Introduce el código", auth_reset_new_password: "Nueva contraseña",
+    auth_reset_submit: "Cambiar contraseña", auth_reset_success: "Contraseña cambiada. Ya puedes iniciar sesión.",
+    auth_back_to_login: "Volver a iniciar sesión",
+    auth_error_mismatch: "Las contraseñas no coinciden.", auth_error_exists: "Este correo ya está registrado.",
+    auth_error_invalid: "Datos de acceso inválidos.", auth_error_code: "Código incorrecto.",
+    auth_logout: "Cerrar sesión", auth_dashboard_title: "Mi restaurante",
+    auth_welcome: "Bienvenido de nuevo",
+    status_pending_title: "Solicitud en revisión",
+    status_pending_body: "Estamos verificando tus datos. Esto suele tardar 1-2 días hábiles.",
+    status_approved_title: "Membresía aprobada",
+    status_approved_body: "Tu restaurante ya es visible para los visitantes de WorldTable.",
+    admin_login_title: "Acceso de administrador", admin_password_placeholder: "Contraseña", admin_login_button: "Iniciar sesión",
+    admin_error: "Contraseña incorrecta.", admin_back: "Volver al sitio",
+    admin_title: "Panel de administración", admin_stats_pending: "Pendientes", admin_stats_approved: "Aprobados",
+    admin_pending_label: "Esperando aprobación", admin_approved_label: "Restaurantes aprobados",
+    admin_no_owners: "Aún no hay nadie aquí.", admin_approve: "Aprobar", admin_revoke: "Revocar",
+    admin_email_preview_title: "Correo enviado al restaurante",
+    admin_email_to: "Para", admin_email_subject: "Asunto", admin_email_close: "Cerrar",
+    filter_price: "Precio", filter_price_1: "€", filter_price_2: "€€", filter_price_3: "€€€",
+    filter_dietary: "Dieta", filter_open_now: "Abierto ahora", filter_near_me: "Cerca de mí",
+    filter_near_me_denied: "Ubicación no disponible", filter_clear: "Borrar filtros",
+    dietary_vegan: "Vegano", dietary_vegetarian_friendly: "Apto para vegetarianos",
+    dietary_halal: "Halal", dietary_pescatarian: "Pescetariano",
+    dashboard_title: "Tus estadísticas", dashboard_views: "Visitas al perfil", dashboard_clicks: "Clics de contacto",
+    dashboard_none: "Aún sin actividad — vuelve cuando tu ficha esté publicada.",
+    checkout_title: "Mejorar a Premium", checkout_demo_note: "Pago de demostración — no se procesa ningún pago real.",
+    checkout_card_label: "Número de tarjeta", checkout_confirm: "Confirmar (demo)",
+    checkout_success: "Mejora de demostración completa — no se realizó ningún cargo.", checkout_cancel: "Cancelar",
+    consent_text: "Usamos almacenamiento local/compartido para recordar tus preferencias y los datos de la app. Sin rastreo de terceros.",
+    consent_accept: "Entendido", consent_privacy_link: "Aviso de privacidad",
+    spam_error: "Inténtalo de nuevo.",
+  },
+};
+
+const LANGS = [
+  { id: "nl", label: "NL" },
+  { id: "en", label: "EN" },
+  { id: "ar", label: "AR" },
+  { id: "tr", label: "TR" },
+  { id: "es", label: "ES" },
+];
+
+
+function Header({ lang, setLang, view, setView, t }) {
+  return (
+    <header className="sticky top-0 z-30 flex items-center justify-between px-4 py-2 flex-wrap gap-2"
+      style={{ background: PAPER, borderBottom: `2px solid ${INK}` }}>
+      <div className="flex items-center gap-2">
+        <LogoMark size={16} />
+        <span className="font-display font-bold text-lg tracking-tight">{t.brand}</span>
+      </div>
+      <nav className="flex items-center gap-1 flex-wrap">
+        <button onClick={() => setView("discover")} className="px-2.5 py-1.5 text-sm font-medium font-display transition-colors"
+          style={{ borderBottom: view === "discover" ? `3px solid ${DELFT}` : "3px solid transparent" }}
+          aria-current={view === "discover" ? "page" : undefined}>
+          {t.nav_discover}
+        </button>
+        <button onClick={() => setView("owner")} className="px-2.5 py-1.5 text-sm font-medium font-display whitespace-nowrap transition-colors"
+          style={{ borderBottom: view === "owner" ? `3px solid ${DELFT}` : "3px solid transparent" }}
+          aria-current={view === "owner" ? "page" : undefined}>
+          {t.nav_owner}
+        </button>
+        <div className="flex items-center ml-1" style={{ border: `2px solid ${INK}` }} role="group" aria-label="Language selector">
+          {LANGS.map((l, i) => (
+            <button
+              key={l.id}
+              onClick={() => setLang(l.id)}
+              className="px-1.5 py-1 font-mono text-xs font-semibold transition-colors"
+              style={{
+                background: lang === l.id ? INK : PAPER,
+                color: lang === l.id ? PAPER : INK,
+                borderInlineStart: i > 0 ? `2px solid ${INK}` : "none",
+              }}
+              aria-pressed={lang === l.id}
+              aria-label={`Switch to ${l.label}`}>
+              {l.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+    </header>
+  );
+}
+
+
+function LogoMark({ size = 36 }) {
+  const items = [
+    { Icon: Beef, color: BRICK, angle: -90 },
+    { Icon: Fish, color: CANAL, angle: -18 },
+    { Icon: Coffee, color: GOLD, angle: 54 },
+    { Icon: Wine, color: DELFT, angle: 126 },
+    { Icon: UtensilsCrossed, color: BRICK, angle: 198 },
+  ];
+  const r = size * 0.62;
+  return (
+    <div className="relative shrink-0" style={{ width: size * 2.1, height: size * 2.1 }}>
+      <div className="absolute inset-0 rounded-full" style={{ border: `2px solid ${INK}`, background: PAPER }} />
+      {items.map(({ Icon, color, angle }, i) => {
+        const rad = (angle * Math.PI) / 180;
+        const cx = size * 1.05 + r * Math.cos(rad) - size * 0.24;
+        const cy = size * 1.05 + r * Math.sin(rad) - size * 0.24;
+        return (
+          <div key={i} className="absolute flex items-center justify-center rounded-full"
+            style={{ width: size * 0.48, height: size * 0.48, left: cx, top: cy, background: color, border: `1.5px solid ${INK}` }}>
+            <Icon size={size * 0.26} color={PAPER} />
+          </div>
+        );
+      })}
+      <div className="absolute flex items-center justify-center rounded-full"
+        style={{ width: size * 0.6, height: size * 0.6, left: size * 1.05 - size * 0.3, top: size * 1.05 - size * 0.3, background: INK }}>
+        <Globe size={size * 0.32} color={PAPER} />
+      </div>
+    </div>
+  );
+}
+
+
+function Stars({ rating }) {
+  const full = Math.round(rating);
+  return (
+    <div className="flex items-center gap-0.5" aria-label={`Rating: ${rating} out of 5`}>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Star key={i} size={12} fill={i <= full ? GOLD : "none"} color={GOLD} />
+      ))}
+    </div>
+  );
+}
+
+
+function ContactRow({ r, t, onContactClick }) {
+  const track = () => onContactClick && onContactClick(r.id);
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-1">
+      <a href={`tel:${r.phone}`} onClick={track} className="flex items-center gap-1 text-10 font-mono px-2 py-1 transition-colors hover:bg-gray-100"
+        style={{ border: `1.5px solid ${INK}` }} aria-label={`Call ${r.name}`}>
+        <Phone size={11} /> {t.contact_call}
+      </a>
+      <a href={`https://wa.me/${r.whatsapp}`} target="_blank" rel="noreferrer" onClick={track}
+        className="flex items-center gap-1 text-10 font-mono px-2 py-1 transition-colors hover:opacity-80"
+        style={{ border: `1.5px solid ${INK}`, background: "#DDEDE9" }} aria-label={`WhatsApp ${r.name}`}>
+        <MessageCircle size={11} /> {t.contact_whatsapp}
+      </a>
+      <a href={`mailto:${r.email}`} onClick={track} className="flex items-center gap-1 text-10 font-mono px-2 py-1 transition-colors hover:bg-gray-100"
+        style={{ border: `1.5px solid ${INK}` }} aria-label={`Email ${r.name}`}>
+        <Mail size={11} /> {t.contact_email}
+      </a>
+      <a href={`https://${r.website}`} target="_blank" rel="noreferrer" onClick={track}
+        className="flex items-center gap-1 text-10 font-mono px-2 py-1 transition-colors hover:bg-gray-100"
+        style={{ border: `1.5px solid ${INK}` }} aria-label={`Website ${r.name}`}>
+        <Globe size={11} /> {t.contact_website}
+      </a>
+    </div>
+  );
+}
+
+
+function Sticker({ Icon, color, style }) {
+  return (
+    <div
+      className="absolute hidden sm:flex items-center justify-center rounded-full"
+      style={{ width: 34, height: 34, background: color, border: `2px solid #1C1B19`, ...style }}
+    >
+      <Icon size={16} color="#F6F1E7" />
+    </div>
+  );
+}
+
+
+function AdBanner({ t }) {
+  return (
+    <div className="p-3 flex items-center gap-3" style={{ border: `2px dashed ${INK}`, background: "#fff" }}>
+      <span className="text-9 font-mono font-semibold px-1.5 py-0.5 shrink-0" style={{ background: "#eee", border: `1px solid ${INK}` }}>
+        {t.ads_label}
+      </span>
+      <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: CANAL }}>
+        <Bike size={20} color={PAPER} />
+      </div>
+      <div className="flex-1">
+        <p className="font-display font-bold text-sm">{t.ad_bike_title}</p>
+        <p className="text-11" style={{ color: "#666" }}>{t.ad_bike_body}</p>
+      </div>
+      <button className="text-xs font-medium font-display px-2.5 py-1.5 whitespace-nowrap flex items-center gap-1 transition-colors hover:opacity-80"
+        style={{ border: `2px solid ${INK}`, background: PAPER }}>
+        {t.ad_bike_cta} <ArrowRight size={12} />
+      </button>
+    </div>
+  );
+}
+
+
+function GableHouse({ x, width, height, color }) {
+  const roofH = 26;
+  return (
+    <g transform={`translate(${x},0)`}>
+      <polygon
+        points={`0,${roofH} ${width / 2},0 ${width},${roofH} ${width},${roofH + height} 0,${roofH + height}`}
+        fill={color} stroke={INK} strokeWidth="1.5"
+      />
+      <rect x={width * 0.2} y={roofH + height * 0.35} width={width * 0.22} height={height * 0.4} fill={PAPER} stroke={INK} strokeWidth="1" />
+      <rect x={width * 0.58} y={roofH + height * 0.35} width={width * 0.22} height={height * 0.4} fill={PAPER} stroke={INK} strokeWidth="1" />
+    </g>
+  );
+}
+
+function Skyline() {
+  const houses = [
+    { w: 60, h: 110, c: BRICK }, { w: 48, h: 130, c: GOLD }, { w: 56, h: 100, c: DELFT },
+    { w: 52, h: 140, c: CANAL }, { w: 60, h: 115, c: BRICK }, { w: 46, h: 125, c: DELFT },
+    { w: 58, h: 105, c: GOLD }, { w: 50, h: 135, c: CANAL }, { w: 54, h: 118, c: BRICK },
+  ];
+  let x = 0;
+  const total = houses.reduce((s, h) => s + h.w, 0);
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${total} 170`} preserveAspectRatio="xMidYMax slice" className="w-full h-40 md:h-48">
+        {houses.map((h, i) => {
+          const el = <GableHouse key={i} x={x} width={h.w} height={h.h} color={h.c} />;
+          x += h.w;
+          return el;
+        })}
+        <rect x="0" y="168" width={total} height="6" fill={INK} />
+      </svg>
+      <div className="absolute bottom-0 flex items-center justify-center w-full pb-0.5">
+        <div className="p-1 rounded-full" style={{ background: PAPER, border: `2px solid ${INK}` }}>
+          <Bike size={18} color={INK} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function ConsentBanner({ t, onAccept }) {
+  return (
+    <div className="fixed bottom-0 inset-x-0 z-50 p-3" style={{ background: INK, color: PAPER }} role="region" aria-label="Cookie and storage notice">
+      <div className="max-w-3xl mx-auto flex items-center gap-3 flex-wrap justify-between">
+        <p className="text-xs flex-1 minw-200">{t.consent_text}</p>
+        <button onClick={onAccept} className="text-xs font-semibold px-3 py-1.5 shrink-0" style={{ background: PAPER, color: INK, border: `2px solid ${PAPER}` }}>
+          {t.consent_accept}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+// Demo-only checkout UI. No payment processor is wired up — this exists to
+// show the intended flow. To go live, replace handleConfirm with a real
+// Stripe (or similar) Checkout Session / Payment Element integration on a
+// real backend; never process card data directly in client code.
+function CheckoutModal({ t, onClose }) {
+  const [done, setDone] = useState(false);
+  const [card, setCard] = useState("");
+
+  const handleConfirm = (e) => {
+    e.preventDefault();
+    setDone(true);
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-4" style={{ background: "rgba(17,17,17,0.5)" }} role="dialog" aria-modal="true">
+      <div className="w-full max-w-sm" style={{ background: "#fff", border: `2px solid ${INK}` }}>
+        <div className="flex items-center justify-between px-3 py-2" style={{ background: GOLD, color: INK }}>
+          <span className="flex items-center gap-1.5 text-sm font-semibold"><CreditCard size={14} /> {t.checkout_title}</span>
+          <button onClick={onClose} aria-label="Close"><X size={16} color={INK} /></button>
+        </div>
+        <div className="p-3 flex flex-col gap-2">
+          <p className="text-xs font-semibold" style={{ color: "#8a5a00" }}>{t.checkout_demo_note}</p>
+          {done ? (
+            <div className="flex items-center gap-2 p-3" style={{ border: `2px solid ${INK}`, background: "#DDEDE9" }}>
+              <CheckCircle2 size={18} color={CANAL} />
+              <span className="text-sm">{t.checkout_success}</span>
+            </div>
+          ) : (
+            <form onSubmit={handleConfirm} className="flex flex-col gap-2">
+              <input type="text" inputMode="numeric" placeholder={t.checkout_card_label} value={card}
+                onChange={(e) => setCard(e.target.value)} className="input-field" maxLength={19} />
+              <button type="submit" className="btn-primary">{t.checkout_confirm}</button>
+            </form>
+          )}
+          <button onClick={onClose} className="text-xs font-medium py-1.5 transition-colors hover:bg-gray-100" style={{ border: `2px solid ${INK}` }}>
+            {t.checkout_cancel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function RestaurantCard({
+  r, t, lang, localReviews, setLocalReviews, reviewDrafts, setReviewDrafts,
+  recordView, recordContactClick,
+}) {
+  const cuisineInfo = CUISINES.find((c) => c.id === r.cuisine);
+  const Icon = cuisineInfo?.icon || Utensils;
+  const [isOpen, setIsOpen] = useState(false);
+  const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+
+  // Real view counter: fires once per card mount (i.e. once per page load
+  // that this card was rendered/scrolled into the results), persisted via
+  // the shared storage-backed `analytics` state in App.jsx.
+  const viewedRef = useRef(false);
+  useEffect(() => {
+    if (!viewedRef.current) {
+      viewedRef.current = true;
+      recordView && recordView(r.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [r.id]);
+
+  const allReviews = [...r.reviews, ...(localReviews[r.id] || [])];
+  const draft = reviewDrafts[r.id] || { name: "", text: "" };
+  const openNow = isOpenNow(r);
+
+  const submitReview = () => {
+    if (!draft.name || !draft.text) return;
+    setLocalReviews((prev) => ({ ...prev, [r.id]: [...(prev[r.id] || []), draft] }));
+    setReviewDrafts((prev) => ({ ...prev, [r.id]: { name: "", text: "" } }));
+  };
+
+  return (
+    <div className="flex flex-col" style={{ border: `2px solid ${INK}`, borderTop: "none" }}>
+      {/* House roof top */}
+      <svg viewBox="0 0 200 40" className="w-full block" preserveAspectRatio="none" style={{ height: 40 }}>
+        <polygon points="0,40 100,0 200,40" fill={r.color} stroke={INK} strokeWidth="2" />
+      </svg>
+
+      <div className="p-3 flex flex-col gap-2 flex-1" style={{ background: "#fff" }}>
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <span className="font-display font-bold text-base">{r.name}</span>
+          <span className="p-1" style={{ background: r.color }}><Icon size={14} color={PAPER} /></span>
+        </div>
+
+        {/* Photo / Video badges */}
+        {(r.photoCount || r.hasVideo) && (
+          <div className="flex items-center gap-2 text-10 font-mono" style={{ color: "#888" }}>
+            {r.photoCount > 0 && <span className="flex items-center gap-1"><Camera size={12} /> {r.photoCount}</span>}
+            {r.hasVideo && <span className="flex items-center gap-1"><PlayCircle size={12} /> {t.watch_video}</span>}
+          </div>
+        )}
+
+        {/* Rating */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Stars rating={r.rating} />
+          <span className="text-11 font-mono" style={{ color: "#777" }}>
+            {r.rating} ({r.reviewCount + (localReviews[r.id]?.length || 0)})
+          </span>
+        </div>
+
+        {/* Dietary / open-now badges */}
+        <div className="flex items-center gap-1.5 flex-wrap text-10 font-mono">
+          <span className="px-1.5 py-0.5" style={{ border: `1.5px solid ${INK}`, background: openNow ? "#DDEDE9" : PAPER, color: INK }}>
+            {openNow ? t.filter_open_now : r.hours}
+          </span>
+          {(r.dietary || []).map((tag) => (
+            <span key={tag} className="px-1.5 py-0.5" style={{ border: `1.5px solid ${INK}`, color: "#555" }}>
+              {t[`dietary_${tag.replace(/-/g, "_")}`] || tag}
+            </span>
+          ))}
+        </div>
+
+        {/* Address & Hours */}
+        <div className="flex items-start gap-1.5 text-xs" style={{ color: "#555" }}>
+          <MapPin size={13} className="mt-0.5 shrink-0" /> <span>{r.address}</span>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs font-mono" style={{ color: "#555" }}>
+          <Clock size={13} className="shrink-0" /> <span>{r.hours}</span>
+        </div>
+
+        {/* Contact */}
+        <ContactRow r={r} t={t} onContactClick={recordContactClick} />
+
+        {/* About */}
+        {r.description && (
+          <>
+            <button onClick={() => setAboutOpen(!aboutOpen)}
+              className="flex items-center justify-center gap-1 text-xs font-medium font-display py-1.5 transition-colors hover:bg-gray-50"
+              style={{ border: `2px solid ${INK}`, background: "#fff" }}
+              aria-expanded={aboutOpen}>
+              {t.about_title}
+              {aboutOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+            {aboutOpen && (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs leading-relaxed" style={{ color: "#444" }}>{r.description}</p>
+                {r.photoCount > 0 && (
+                  <div>
+                    <p className="text-10 font-mono uppercase mb-1" style={{ color: "#999" }}>{t.gallery_title}</p>
+                    <div className="grid grid-cols-4 gap-1">
+                      {Array.from({ length: Math.min(r.photoCount, 4) }).map((_, i) => (
+                        <div key={i} className="aspect-square flex items-center justify-center" style={{ background: r.color, opacity: 0.25 + i * 0.15 }}>
+                          <Camera size={14} color={INK} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {r.hasVideo && (
+                  <div className="flex items-center gap-2 p-2" style={{ background: PAPER, border: `1px solid ${INK}` }}>
+                    <PlayCircle size={20} color={r.color} />
+                    <span className="text-xs font-medium">{t.watch_video}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Menu */}
+        <button onClick={() => setIsOpen(!isOpen)}
+          className="mt-1 flex items-center justify-center gap-1 text-xs font-medium font-display py-1.5 transition-colors hover:bg-gray-50"
+          style={{ border: `2px solid ${INK}`, background: PAPER }}
+          aria-expanded={isOpen}>
+          {isOpen ? t.hide_menu : t.view_menu}
+          {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+        {isOpen && (
+          <ul className="mt-1 flex flex-col gap-1">
+            {r.menu.map((item, i) => {
+              const cut = item.lastIndexOf("—");
+              const name = cut === -1 ? item : item.slice(0, cut).trim();
+              const price = cut === -1 ? "" : item.slice(cut + 1).trim();
+              return (
+                <li key={i} className="text-xs font-mono flex justify-between" style={{ color: "#333" }}>
+                  <span>{name}</span><span>{price}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {/* Reviews */}
+        <button onClick={() => setReviewsOpen(!reviewsOpen)}
+          className="flex items-center justify-center gap-1 text-xs font-medium font-display py-1.5 transition-colors hover:bg-gray-50"
+          style={{ border: `2px solid ${INK}`, background: "#fff" }}
+          aria-expanded={reviewsOpen}>
+          {t.reviews_title} ({allReviews.length})
+          {reviewsOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+        {reviewsOpen && (
+          <div className="flex flex-col gap-2 mt-1">
+            {allReviews.length === 0 && <p className="text-xs" style={{ color: "#999" }}>{t.reviews_none}</p>}
+            {allReviews.map((rev, i) => (
+              <div key={i} className="text-xs p-2" style={{ background: PAPER, border: `1px solid ${INK}` }}>
+                <p className="font-semibold">{rev.name}</p>
+                <p style={{ color: "#555" }}>{rev.text}</p>
+              </div>
+            ))}
+            <div className="flex flex-col gap-1.5 mt-1">
+              <input
+                value={draft.name}
+                onChange={(e) => setReviewDrafts((p) => ({ ...p, [r.id]: { ...draft, name: e.target.value } }))}
+                placeholder={t.review_name}
+                className="px-2 py-1.5 text-xs input-field"
+              />
+              <textarea
+                value={draft.text}
+                onChange={(e) => setReviewDrafts((p) => ({ ...p, [r.id]: { ...draft, text: e.target.value } }))}
+                placeholder={t.review_text}
+                rows={2}
+                className="px-2 py-1.5 text-xs input-field resize-none"
+              />
+              <button onClick={submitReview} className="text-xs font-medium py-1.5 btn-primary">
+                <Send size={12} /> {t.review_submit}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+const DIETARY_TAGS = ["vegan", "vegetarian-friendly", "halal", "pescatarian"];
+const dietaryKey = (tag) => "dietary_" + tag.replace(/-/g, "_");
+
+function DiscoverView({
+  t, lang, query, setQuery, activeCuisine, setActiveCuisine,
+  localReviews, setLocalReviews, reviewDrafts, setReviewDrafts,
+  recordView, recordContactClick,
+}) {
+  const cuisineName = (id) => CUISINES.find((c) => c.id === id)?.name[lang] || id;
+
+  const [dietaryFilter, setDietaryFilter] = useState(new Set());
+  const [openNowOnly, setOpenNowOnly] = useState(false);
+  const [nearMe, setNearMe] = useState(false);
+  const [userLocation, setUserLocation] = useState(null);
+  const [locationDenied, setLocationDenied] = useState(false);
+
+  const toggleDietary = (tag) => setDietaryFilter((prev) => {
+    const next = new Set(prev);
+    next.has(tag) ? next.delete(tag) : next.add(tag);
+    return next;
+  });
+
+  const handleNearMe = async () => {
+    if (nearMe) { setNearMe(false); return; }
+    const loc = await getBrowserLocation();
+    if (!loc) { setLocationDenied(true); return; }
+    setUserLocation(loc);
+    setNearMe(true);
+    setLocationDenied(false);
+  };
+
+  const anyFilterActive = dietaryFilter.size > 0 || openNowOnly || nearMe;
+  const clearFilters = () => {
+    setDietaryFilter(new Set());
+    setOpenNowOnly(false); setNearMe(false);
+  };
+
+  const filtered = useMemo(() => {
+    let list = RESTAURANTS.filter((r) => {
+      const matchesCuisine = activeCuisine === "all" || r.cuisine === activeCuisine;
+      const q = query.trim().toLowerCase();
+      const matchesQuery =
+        !q || r.name.toLowerCase().includes(q) || r.city.toLowerCase().includes(q) ||
+        cuisineName(r.cuisine).toLowerCase().includes(q);
+      const matchesDietary = dietaryFilter.size === 0 || [...dietaryFilter].every((tag) => r.dietary?.includes(tag));
+      const matchesOpen = !openNowOnly || isOpenNow(r);
+      return matchesCuisine && matchesQuery && matchesDietary && matchesOpen;
+    });
+    if (nearMe && userLocation) {
+      list = [...list]
+        .map((r) => ({ ...r, _distanceKm: distanceKm(userLocation.lat, userLocation.lng, r.lat, r.lng) }))
+        .sort((a, b) => a._distanceKm - b._distanceKm);
+    }
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCuisine, query, lang, dietaryFilter, openNowOnly, nearMe, userLocation]);
+
+  const newlyAdded = RESTAURANTS.filter((r) => r.isNew);
+
+  return (
+    <main>
+      {/* Hero */}
+      <section className="relative">
+        <Skyline />
+        <Sticker Icon={Flower2} color="#A8462F" style={{ top: 6, insetInlineStart: 16, transform: "rotate(-8deg)" }} />
+        <Sticker Icon={Coffee} color="#C79A3D" style={{ top: 40, insetInlineEnd: 20, transform: "rotate(6deg)" }} />
+        <Sticker Icon={Croissant} color="#2A4A6B" style={{ top: 90, insetInlineStart: "8%", transform: "rotate(10deg)" }} />
+        <div className="px-4 py-6 max-w-3xl mx-auto">
+          <h1 className="font-display font-bold leading-tight" style={{ fontSize: "2rem" }}>{t.hero_title}</h1>
+          <p className="mt-2 text-sm leading-relaxed" style={{ color: "#4a4744" }}>{t.hero_subtitle}</p>
+          <div className="mt-4 flex items-center gap-2 px-3 py-2" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+            <Search size={16} color="#777" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t.search_placeholder}
+              className="flex-1 text-sm outline-none bg-transparent"
+              aria-label={t.search_placeholder}
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* New arrivals */}
+      {newlyAdded.length > 0 && (
+        <section className="px-4 py-3 max-w-3xl mx-auto">
+          <h2 className="font-display font-bold text-base mb-2 flex items-center gap-1.5">
+            <Sparkles size={16} color={CANAL} /> {t.new_title}
+          </h2>
+          <div className="flex gap-3 overflow-x-auto pb-1">
+            {newlyAdded.map((r) => {
+              const Icon = CUISINES.find((c) => c.id === r.cuisine)?.icon || (() => null);
+              return (
+                <div key={r.id} className="minw-200 flex-shrink-0 p-2.5" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+                  <div className="flex items-center gap-2">
+                    <span className="p-1" style={{ background: r.color }}><Icon size={14} color={PAPER} /></span>
+                    <p className="font-display font-bold text-sm">{r.name}</p>
+                  </div>
+                  <p className="text-11 mt-1" style={{ color: "#666" }}>{cuisineName(r.cuisine)} · {r.city}</p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Category filters */}
+      <section className="px-4 py-3 overflow-x-auto max-w-3xl mx-auto">
+        <div className="flex gap-2 w-max">
+          <button
+            onClick={() => setActiveCuisine("all")}
+            className="font-mono text-xs font-medium px-3 py-1.5 whitespace-nowrap transition-colors"
+            style={{
+              border: `2px solid ${INK}`,
+              background: activeCuisine === "all" ? INK : PAPER,
+              color: activeCuisine === "all" ? PAPER : INK,
+            }}
+            aria-pressed={activeCuisine === "all"}>
+            {t.cat_all}
+          </button>
+          {CUISINES.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => setActiveCuisine(c.id)}
+              className="font-mono text-xs font-medium px-3 py-1.5 whitespace-nowrap flex items-center gap-1.5 transition-colors"
+              style={{
+                border: `2px solid ${INK}`,
+                background: activeCuisine === c.id ? c.color : PAPER,
+                color: INK,
+              }}
+              aria-pressed={activeCuisine === c.id}>
+              <c.icon size={13} /> {c.name[lang]}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Dietary / open-now / near-me filters */}
+      <section className="px-4 py-2 max-w-3xl mx-auto">
+        <div className="flex gap-1.5 flex-wrap items-center">
+          <button onClick={() => setOpenNowOnly((v) => !v)} aria-pressed={openNowOnly}
+            className="flex items-center gap-1 font-mono text-xs font-medium px-2 py-1 transition-colors"
+            style={{ border: `2px solid ${INK}`, background: openNowOnly ? CANAL : PAPER, color: openNowOnly ? PAPER : INK }}>
+            <Clock3 size={12} /> {t.filter_open_now}
+          </button>
+          <button onClick={handleNearMe} aria-pressed={nearMe}
+            className="flex items-center gap-1 font-mono text-xs font-medium px-2 py-1 transition-colors"
+            style={{ border: `2px solid ${INK}`, background: nearMe ? DELFT : PAPER, color: nearMe ? PAPER : INK }}>
+            <MapPin size={12} /> {t.filter_near_me}
+          </button>
+          {anyFilterActive && (
+            <button onClick={clearFilters} className="flex items-center gap-1 text-xs underline" style={{ color: "#888" }}>
+              <X size={12} /> {t.filter_clear}
+            </button>
+          )}
+        </div>
+        <div className="flex gap-1.5 flex-wrap items-center mt-1.5">
+          {DIETARY_TAGS.map((tag) => (
+            <button key={tag} onClick={() => toggleDietary(tag)} aria-pressed={dietaryFilter.has(tag)}
+              className="font-mono text-11 font-medium px-2 py-1 transition-colors"
+              style={{ border: `2px solid ${INK}`, background: dietaryFilter.has(tag) ? GOLD : PAPER, color: INK }}>
+              {t[dietaryKey(tag)]}
+            </button>
+          ))}
+        </div>
+        {locationDenied && <p className="text-11 mt-1" style={{ color: "#999" }}>{t.filter_near_me_denied}</p>}
+      </section>
+
+      {/* Ad Banner */}
+      <section className="px-4 py-2 max-w-3xl mx-auto">
+        <AdBanner t={t} />
+      </section>
+
+      {/* Restaurant grid */}
+      <section className="px-4 py-4 max-w-3xl mx-auto">
+        <h2 className="font-display font-bold text-lg mb-3">{t.section_title}</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {filtered.map((r) => (
+            <RestaurantCard
+              key={r.id}
+              r={r}
+              t={t}
+              lang={lang}
+              localReviews={localReviews}
+              setLocalReviews={setLocalReviews}
+              reviewDrafts={reviewDrafts}
+              setReviewDrafts={setReviewDrafts}
+              recordView={recordView}
+              recordContactClick={recordContactClick}
+            />
+          ))}
+        </div>
+        {filtered.length === 0 && (
+          <p className="text-sm text-center py-8" style={{ color: "#999" }}>No restaurants found.</p>
+        )}
+      </section>
+    </main>
+  );
+}
+
+
+function AdminView({
+  t, lang, adminAuthed, adminPasswordInput, setAdminPasswordInput, adminError,
+  handleAdminLogin, ownersDB, setOwnerApproval, setView, analytics,
+}) {
+  const [emailPreview, setEmailPreview] = useState(null);
+
+  const approveWithEmail = (owner) => {
+    setOwnerApproval(owner.email, true);
+    const tpl = EMAIL_TEMPLATES[lang] || EMAIL_TEMPLATES.en;
+    setEmailPreview({ to: owner.email, subject: tpl.subject, body: tpl.body(owner.businessName) });
+  };
+
+  if (!adminAuthed) {
+    return (
+      <main className="px-4 py-6 max-w-md mx-auto">
+        <div className="flex items-center gap-2 mb-4">
+          <Shield size={20} />
+          <h1 className="font-display font-bold text-xl">{t.admin_login_title}</h1>
+        </div>
+        <form onSubmit={handleAdminLogin} className="flex flex-col gap-2.5">
+          <input
+            type="password"
+            placeholder={t.admin_password_placeholder}
+            value={adminPasswordInput}
+            onChange={(e) => setAdminPasswordInput(e.target.value)}
+            className="input-field"
+          />
+          {adminError && <p className="text-xs" style={{ color: BRICK }}>{adminError}</p>}
+          <button type="submit" className="btn-primary">{t.admin_login_button}</button>
+        </form>
+        <button onClick={() => setView("discover")} className="mt-3 text-xs font-medium underline">{t.admin_back}</button>
+      </main>
+    );
+  }
+
+  const pending = ownersDB.filter((o) => !o.approved);
+  const approved = ownersDB.filter((o) => o.approved);
+
+  return (
+    <main className="px-4 py-6 max-w-2xl mx-auto">
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="font-display font-bold text-2xl flex items-center gap-2">
+          <Shield size={22} /> {t.admin_title}
+        </h1>
+        <button onClick={() => setView("discover")} className="text-xs font-medium underline shrink-0">{t.admin_back}</button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 mt-5">
+        <div className="p-3" style={{ border: `2px solid ${INK}`, background: GOLD }}>
+          <p className="text-11 font-medium">{t.admin_stats_pending}</p>
+          <p className="font-mono font-bold text-2xl">{pending.length}</p>
+        </div>
+        <div className="p-3" style={{ border: `2px solid ${INK}`, background: "#DDEDE9" }}>
+          <p className="text-11 font-medium">{t.admin_stats_approved}</p>
+          <p className="font-mono font-bold text-2xl">{approved.length}</p>
+        </div>
+      </div>
+
+      <h2 className="font-display font-bold text-base mt-6 mb-2 flex items-center gap-1.5">
+        <BarChart3 size={16} /> {t.dashboard_title}
+      </h2>
+      <div className="flex flex-col gap-1.5">
+        {[...RESTAURANTS].sort((a, b) => (analytics[b.id]?.views || 0) - (analytics[a.id]?.views || 0)).map((r) => (
+          <div key={r.id} className="flex items-center justify-between gap-2 p-2.5" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+            <p className="text-sm font-semibold truncate">{r.name}</p>
+            <div className="flex items-center gap-3 shrink-0 font-mono text-xs" style={{ color: "#555" }}>
+              <span className="flex items-center gap-1"><Eye size={13} /> {analytics[r.id]?.views || 0}</span>
+              <span className="flex items-center gap-1"><MousePointerClick size={13} /> {analytics[r.id]?.clicks || 0}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="font-display font-bold text-base mt-6 mb-2 flex items-center gap-1.5">
+        <Users size={16} /> {t.admin_pending_label}
+      </h2>
+      {pending.length === 0 && <p className="text-xs" style={{ color: "#999" }}>{t.admin_no_owners}</p>}
+      <div className="flex flex-col gap-2">
+        {pending.map((o) => (
+          <div key={o.email} className="flex items-center justify-between gap-2 p-3" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold truncate">{o.businessName}</p>
+              <p className="text-xs font-mono truncate" style={{ color: "#777" }}>{o.email}</p>
+            </div>
+            <button onClick={() => approveWithEmail(o)}
+              className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 shrink-0 transition-colors hover:opacity-90"
+              style={{ background: CANAL, color: PAPER, border: `2px solid ${INK}` }}>
+              <CheckCircle2 size={13} /> {t.admin_approve}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="font-display font-bold text-base mt-6 mb-2 flex items-center gap-1.5">
+        <CheckCircle2 size={16} color={CANAL} /> {t.admin_approved_label}
+      </h2>
+      {approved.length === 0 && <p className="text-xs" style={{ color: "#999" }}>{t.admin_no_owners}</p>}
+      <div className="flex flex-col gap-2">
+        {approved.map((o) => (
+          <div key={o.email} className="flex items-center justify-between gap-2 p-3" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold truncate">{o.businessName}</p>
+              <p className="text-xs font-mono truncate" style={{ color: "#777" }}>{o.email}</p>
+            </div>
+            <button onClick={() => setOwnerApproval(o.email, false)}
+              className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 shrink-0 transition-colors hover:bg-gray-100"
+              style={{ background: PAPER, color: INK, border: `2px solid ${INK}` }}>
+              <XCircle size={13} /> {t.admin_revoke}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Email Preview Modal */}
+      {emailPreview && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4" style={{ background: "rgba(17,17,17,0.5)" }} role="dialog" aria-modal="true">
+          <div className="w-full max-w-sm" style={{ background: "#fff", border: `2px solid ${INK}` }}>
+            <div className="flex items-center justify-between px-3 py-2" style={{ background: CANAL, color: PAPER }}>
+              <span className="flex items-center gap-1.5 text-sm font-semibold"><Send size={14} /> {t.admin_email_preview_title}</span>
+              <button onClick={() => setEmailPreview(null)} aria-label="Close"><X size={16} color={PAPER} /></button>
+            </div>
+            <div className="p-3 flex flex-col gap-1.5">
+              <p className="text-xs font-mono"><strong>{t.admin_email_to}:</strong> {emailPreview.to}</p>
+              <p className="text-xs font-mono"><strong>{t.admin_email_subject}:</strong> {emailPreview.subject}</p>
+              <div className="text-xs whitespace-pre-line p-2 mt-1" style={{ background: PAPER, border: `1px solid ${INK}` }}>
+                {emailPreview.body}
+              </div>
+              <button onClick={() => setEmailPreview(null)} className="mt-2 text-xs font-medium py-1.5 transition-colors hover:bg-gray-100"
+                style={{ border: `2px solid ${INK}` }}>{t.admin_email_close}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
+}
+
+
+function AuthView({
+  t, authView, setAuthView, authForm, setAuthForm, authError, setAuthError,
+  handleSignup, handleLogin, resetEmail, setResetEmail, handleSendResetCode,
+  resetCode, resetCodeInput, setResetCodeInput, resetNewPassword, setResetNewPassword,
+  handleResetPassword, resetDone, setResetDone,
+}) {
+  const inputStyle = { border: `2px solid ${INK}`, background: "#fff" };
+
+  if (authView === "forgot" || authView === "reset") {
+    return (
+      <main className="px-4 py-6 max-w-md mx-auto">
+        <div className="flex items-center gap-2 mb-4">
+          <KeyRound size={20} />
+          <h1 className="font-display font-bold text-xl">{t.auth_reset_title}</h1>
+        </div>
+
+        {authView === "forgot" && (
+          <form onSubmit={handleSendResetCode} className="flex flex-col gap-2.5">
+            <p className="text-xs" style={{ color: "#555" }}>{t.auth_reset_body}</p>
+            <input type="email" placeholder={t.auth_email} value={resetEmail} required
+              onChange={(e) => setResetEmail(e.target.value)} className="px-3 py-2.5 text-sm" style={inputStyle} />
+            {authError && <p className="text-xs" style={{ color: BRICK }}>{authError}</p>}
+            <button type="submit" className="btn-primary">{t.auth_reset_send}</button>
+          </form>
+        )}
+
+        {authView === "reset" && !resetDone && (
+          <form onSubmit={handleResetPassword} className="flex flex-col gap-2.5">
+            <div className="p-2.5 text-xs font-mono" style={{ background: GOLD, border: `1px solid ${INK}` }}>
+              {t.auth_reset_code_sent} <strong>{resetCode}</strong>
+            </div>
+            <input type="text" placeholder={t.auth_reset_code_label} value={resetCodeInput} required
+              onChange={(e) => setResetCodeInput(e.target.value)} className="px-3 py-2.5 text-sm" style={inputStyle} />
+            <input type="password" placeholder={t.auth_reset_new_password} value={resetNewPassword} required
+              onChange={(e) => setResetNewPassword(e.target.value)} className="px-3 py-2.5 text-sm" style={inputStyle} />
+            {authError && <p className="text-xs" style={{ color: BRICK }}>{authError}</p>}
+            <button type="submit" className="btn-primary">{t.auth_reset_submit}</button>
+          </form>
+        )}
+
+        {resetDone && (
+          <div className="flex flex-col gap-3">
+            <div className="p-3 flex items-center gap-2" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+              <Check size={18} color={CANAL} /><span className="text-sm">{t.auth_reset_success}</span>
+            </div>
+            <button onClick={() => { setAuthView("login"); setResetDone(false); setAuthError(""); }}
+              className="text-sm font-medium underline">{t.auth_back_to_login}</button>
+          </div>
+        )}
+
+        {authView === "forgot" && (
+          <button onClick={() => { setAuthView("login"); setAuthError(""); }} className="mt-3 text-xs font-medium underline">
+            {t.auth_back_to_login}
+          </button>
+        )}
+      </main>
+    );
+  }
+
+  const isSignup = authView === "signup";
+  return (
+    <main className="px-4 py-6 max-w-md mx-auto">
+      <div className="flex items-center gap-2 mb-4">
+        <Lock size={20} />
+        <h1 className="font-display font-bold text-xl">{isSignup ? t.auth_signup_title : t.auth_login_title}</h1>
+      </div>
+      <form onSubmit={isSignup ? handleSignup : handleLogin} className="flex flex-col gap-2.5">
+        {isSignup && (
+          <input type="text" name="website" tabIndex={-1} autoComplete="off"
+            value={authForm.website} onChange={(e) => setAuthForm((f) => ({ ...f, website: e.target.value }))}
+            style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }}
+            aria-hidden="true" />
+        )}
+        {isSignup && (
+          <input type="text" placeholder={t.auth_business_name} value={authForm.businessName} required
+            onChange={(e) => setAuthForm((f) => ({ ...f, businessName: e.target.value }))}
+            className="px-3 py-2.5 text-sm" style={inputStyle} />
+        )}
+        <input type="email" placeholder={t.auth_email} value={authForm.email} required
+          onChange={(e) => setAuthForm((f) => ({ ...f, email: e.target.value }))} className="px-3 py-2.5 text-sm" style={inputStyle} />
+        <input type="password" placeholder={t.auth_password} value={authForm.password} required
+          onChange={(e) => setAuthForm((f) => ({ ...f, password: e.target.value }))} className="px-3 py-2.5 text-sm" style={inputStyle} />
+        {isSignup && (
+          <input type="password" placeholder={t.auth_confirm_password} value={authForm.confirmPassword} required
+            onChange={(e) => setAuthForm((f) => ({ ...f, confirmPassword: e.target.value }))}
+            className="px-3 py-2.5 text-sm" style={inputStyle} />
+        )}
+        {authError && <p className="text-xs" style={{ color: BRICK }}>{authError}</p>}
+        <button type="submit" className="btn-primary">
+          <LogIn size={16} /> {isSignup ? t.auth_signup_button : t.auth_login_button}
+        </button>
+      </form>
+      <div className="flex flex-col gap-1.5 mt-3">
+        {!isSignup && (
+          <button onClick={() => { setAuthView("forgot"); setAuthError(""); }} className="text-xs font-medium underline text-left">
+            {t.auth_forgot_password}
+          </button>
+        )}
+        <button onClick={() => { setAuthView(isSignup ? "login" : "signup"); setAuthError(""); }}
+          className="text-xs font-medium underline text-left">
+          {isSignup ? t.auth_switch_to_login : t.auth_switch_to_signup}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+
+function OwnerView({
+  t, form, setForm, handleSubmit, submitted, lang, currentOwner, handleLogout,
+}) {
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  return (
+    <main className="px-4 py-6 max-w-2xl mx-auto">
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="font-display font-bold text-2xl">{t.owner_title}</h1>
+        {currentOwner && (
+          <button onClick={handleLogout}
+            className="flex items-center gap-1 text-xs font-medium font-mono px-2 py-1.5 shrink-0 transition-colors hover:bg-gray-100"
+            style={{ border: `2px solid ${INK}` }}>
+            <LogOut size={13} /> {t.auth_logout}
+          </button>
+        )}
+      </div>
+
+      {currentOwner && (
+        <>
+          <p className="text-xs mb-2" style={{ color: "#777" }}>{t.auth_welcome}, {currentOwner.businessName} ({currentOwner.email})</p>
+          {currentOwner.approved ? (
+            <div className="flex items-start gap-2 p-3 mb-3" style={{ border: `2px solid ${INK}`, background: "#DDEDE9" }}>
+              <CheckCircle2 size={18} color={CANAL} className="shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold">{t.status_approved_title}</p>
+                <p className="text-xs" style={{ color: "#444" }}>{t.status_approved_body}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 p-3 mb-3" style={{ border: `2px solid ${INK}`, background: GOLD }}>
+              <Clock size={18} color={INK} className="shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold">{t.status_pending_title}</p>
+                <p className="text-xs" style={{ color: "#333" }}>{t.status_pending_body}</p>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      <p className="text-sm mt-1.5" style={{ color: "#4a4744" }}>{t.owner_subtitle}</p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
+        <div style={{ border: `2px solid ${INK}` }} className="p-4 flex flex-col gap-2">
+          <p className="font-display font-bold text-lg">{t.plan_basic}</p>
+          <p className="font-mono font-semibold text-xl" style={{ color: DELFT }}>{t.plan_basic_price}</p>
+          {[t.plan_basic_f1, t.plan_basic_f2, t.plan_basic_f3].map((f, i) => (
+            <p key={i} className="text-xs flex items-center gap-1.5"><Check size={13} color={CANAL} /> {f}</p>
+          ))}
+        </div>
+        <div style={{ border: `2px solid ${INK}`, background: GOLD }} className="p-4 flex flex-col gap-2">
+          <p className="font-display font-bold text-lg flex items-center gap-1.5"><Sparkles size={18} /> {t.why_title}</p>
+          <p className="text-xs">{t.why_body}</p>
+          <button type="button" onClick={() => setCheckoutOpen(true)}
+            className="mt-1 text-xs font-semibold px-2.5 py-1.5 self-start transition-colors hover:opacity-90"
+            style={{ background: INK, color: PAPER, border: `2px solid ${INK}` }}>
+            {t.checkout_title}
+          </button>
+        </div>
+      </div>
+
+      {currentOwner?.approved && (
+        <>
+          <h2 className="font-display font-bold text-lg mt-6 mb-2 flex items-center gap-1.5">
+            <BarChart3 size={16} /> {t.dashboard_title}
+          </h2>
+          <div className="p-3 flex items-start gap-2" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+            <div className="flex-1 flex items-center gap-2 text-xs" style={{ color: "#666" }}>
+              <Eye size={14} /> <MousePointerClick size={14} className="ml-1" />
+              <span>{t.dashboard_none}</span>
+            </div>
+          </div>
+        </>
+      )}
+
+      {checkoutOpen && <CheckoutModal t={t} onClose={() => setCheckoutOpen(false)} />}
+
+      <h2 className="font-display font-bold text-lg mt-6 mb-2">{t.form_title}</h2>
+      {submitted ? (
+        <div className="p-4 flex items-center gap-2" style={{ border: `2px solid ${INK}`, background: "#fff" }}>
+          <Check size={18} color={CANAL} />
+          <span className="text-sm">
+            {form.name} — {form.city} — {form.cuisine === "other"
+              ? (form.cuisineOther || t.cuisine_other)
+              : (CUISINES.find((c) => c.id === form.cuisine)?.name[lang] ?? form.cuisine)}
+          </span>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="flex flex-col gap-2.5">
+          <input type="text" name="website" tabIndex={-1} autoComplete="off"
+            value={form.website} onChange={(e) => setForm((f) => ({ ...f, website: e.target.value }))}
+            style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }}
+            aria-hidden="true" />
+          <input type="text" placeholder={t.form_name} value={form.name}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            className="input-field" required />
+          <div className="flex gap-2">
+            <input type="text" placeholder={t.form_city} value={form.city}
+              onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))}
+              className="flex-1 input-field" required />
+            <select value={form.cuisine} onChange={(e) => setForm((f) => ({ ...f, cuisine: e.target.value }))}
+              className="flex-1 input-field">
+              {CUISINES.map((c) => (
+                <option key={c.id} value={c.id}>{c.name[lang]}</option>
+              ))}
+              <option value="other">{t.cuisine_other}</option>
+            </select>
+          </div>
+          {form.cuisine === "other" && (
+            <input type="text" placeholder={t.cuisine_label} value={form.cuisineOther}
+              onChange={(e) => setForm((f) => ({ ...f, cuisineOther: e.target.value }))}
+              className="input-field" />
+          )}
+          <textarea placeholder={t.form_description} value={form.description} rows={3}
+            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            className="input-field resize-none" />
+          <input type="text" placeholder={t.form_video} value={form.video}
+            onChange={(e) => setForm((f) => ({ ...f, video: e.target.value }))}
+            className="input-field" />
+          <div className="flex items-center gap-1.5 text-11" style={{ color: "#888" }}>
+            <Camera size={13} /> {t.form_photos_note}
+          </div>
+          <button type="submit" className="btn-primary">
+            {t.form_submit} <ArrowRight size={16} />
+          </button>
+        </form>
+      )}
+    </main>
+  );
+}
+
+
+function App() {
+  const [lang, setLang] = useState("nl");
+  const t = STRINGS[lang];
+
+  // ---- Routing ----
+  // "#/" = discover, "#/owner" = owner/auth flow, "#/admin" = admin panel.
+  // Query params on "#/" carry the active cuisine/search so filtered views
+  // are shareable and survive a refresh.
+  const [route, navigate] = useHashRoute();
+  const view = route.path === "/admin" ? "admin" : route.path === "/owner" ? "owner" : "discover";
+  const setView = (v) => navigate(v === "discover" ? "/" : `/${v}`);
+
+  const [activeCuisine, setActiveCuisine] = useState(route.params.get("cuisine") || "all");
+  const [query, setQuery] = useState(route.params.get("q") || "");
+  useEffect(() => {
+    if (view !== "discover") return;
+    const params = {};
+    if (activeCuisine !== "all") params.cuisine = activeCuisine;
+    if (query) params.q = query;
+    navigate("/", params);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCuisine, query]);
+
+  const [localReviews, setLocalReviews] = useState({});
+  const [reviewDrafts, setReviewDrafts] = useState({});
+
+  const [form, setForm] = useState({ name: "", city: "", cuisine: "turks", cuisineOther: "", description: "", video: "", website: "" });
+  const [submitted, setSubmitted] = useState(false);
+  const [formStartedAt, setFormStartedAt] = useState(() => Date.now());
+
+  // ---- Owner auth (demo-only) ----
+  const [ownersDB, setOwnersDB] = useState([]);
+  const [currentOwner, setCurrentOwner] = useState(null);
+  const [authView, setAuthView] = useState("login");
+  const [authForm, setAuthForm] = useState({ email: "", password: "", confirmPassword: "", businessName: "", website: "" });
+  const [authError, setAuthError] = useState("");
+  const [authStartedAt, setAuthStartedAt] = useState(() => Date.now());
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetCode, setResetCode] = useState("");
+  const [resetCodeInput, setResetCodeInput] = useState("");
+  const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetDone, setResetDone] = useState(false);
+
+  // ---- Admin ----
+  // SHA-256 of "worldtable2026" — still demo-only, see lib/hash.js.
+  const ADMIN_PASSWORD_HASH = "32c6cf36e68915abf29054af07cca7d7936504bfb0c9c8eee990a33422073a18";
+  const [adminAuthed, setAdminAuthed] = useState(false);
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
+  const [adminError, setAdminError] = useState("");
+
+  // ---- Analytics (real counters, persisted) ----
+  const [analytics, setAnalytics] = useState({});
+
+  // ---- Persistence ----
+  // ownersDB and analytics use *shared* storage so the admin panel and the
+  // live directory reflect activity from everyone using this artifact —
+  // that also means this demo data is visible to anyone who opens it.
+  // Consent is personal (per-browser) since it's just a dismissed-banner flag.
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [consentAccepted, setConsentAccepted] = useState(true);
+  useEffect(() => {
+    (async () => {
+      const [owners, analyticsData, consent] = await Promise.all([
+        storageGet("owners", true),
+        storageGet("analytics", true),
+        storageGet("consent", false),
+      ]);
+      setOwnersDB(owners || []);
+      setAnalytics(analyticsData || {});
+      setConsentAccepted(consent === true);
+      setDataLoaded(true);
+    })();
+  }, []);
+  useEffect(() => { if (dataLoaded) storageSet("owners", ownersDB, true); }, [ownersDB, dataLoaded]);
+  useEffect(() => { if (dataLoaded) storageSet("analytics", analytics, true); }, [analytics, dataLoaded]);
+
+  const acceptConsent = () => {
+    setConsentAccepted(true);
+    storageSet("consent", true, false);
+  };
+
+  const recordView = useCallback((id) => {
+    setAnalytics((prev) => {
+      const cur = prev[id] || { views: 0, clicks: 0 };
+      return { ...prev, [id]: { ...cur, views: cur.views + 1 } };
+    });
+  }, []);
+  const recordContactClick = useCallback((id) => {
+    setAnalytics((prev) => {
+      const cur = prev[id] || { views: 0, clicks: 0 };
+      return { ...prev, [id]: { ...cur, clicks: cur.clicks + 1 } };
+    });
+  }, []);
+
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
+    const hash = await sha256Hex(adminPasswordInput);
+    if (hash === ADMIN_PASSWORD_HASH) {
+      setAdminAuthed(true);
+      setAdminError("");
+    } else {
+      setAdminError(t.admin_error);
+    }
+  };
+
+  const setOwnerApproval = (email, approved) => {
+    setOwnersDB((prev) => prev.map((o) => (o.email === email ? { ...o, approved } : o)));
+    setCurrentOwner((prev) => (prev && prev.email === email ? { ...prev, approved } : prev));
+  };
+
+  // Basic anti-spam: a hidden honeypot field that only bots fill in, plus a
+  // minimum time-on-form check (real users take at least ~2s; scripted
+  // submissions are usually instant). Neither is bulletproof, but both are
+  // free, invisible to real users, and catch the majority of naive bots.
+  const looksLikeSpam = (honeypotValue, startedAt) => {
+    if (honeypotValue) return true;
+    if (Date.now() - startedAt < 1500) return true;
+    return false;
+  };
+
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    if (looksLikeSpam(authForm.website, authStartedAt)) {
+      setAuthError(t.spam_error);
+      return;
+    }
+    const email = normalizeEmail(authForm.email);
+    if (ownersDB.some((o) => o.email === email)) {
+      setAuthError(t.auth_error_exists);
+      return;
+    }
+    if (authForm.password !== authForm.confirmPassword) {
+      setAuthError(t.auth_error_mismatch);
+      return;
+    }
+    const passwordHash = await sha256Hex(authForm.password);
+    const newOwner = { email, passwordHash, businessName: authForm.businessName, approved: false };
+    setOwnersDB((prev) => [...prev, newOwner]);
+    setCurrentOwner(newOwner);
+    setForm((f) => ({ ...f, name: authForm.businessName }));
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    if (looksLikeSpam(authForm.website, authStartedAt)) {
+      setAuthError(t.spam_error);
+      return;
+    }
+    const email = normalizeEmail(authForm.email);
+    const passwordHash = await sha256Hex(authForm.password);
+    const found = ownersDB.find((o) => o.email === email && o.passwordHash === passwordHash);
+    if (!found) {
+      setAuthError(t.auth_error_invalid);
+      return;
+    }
+    setCurrentOwner(found);
+    setForm((f) => ({ ...f, name: found.businessName }));
+  };
+
+  const handleLogout = () => {
+    setCurrentOwner(null);
+    setAuthForm({ email: "", password: "", confirmPassword: "", businessName: "", website: "" });
+    setAuthView("login");
+    setAuthStartedAt(Date.now());
+    // Reset the submission flow too, so the next owner to log in on this
+    // session sees a fresh form instead of the previous owner's confirmation.
+    setSubmitted(false);
+    setForm({ name: "", city: "", cuisine: "turks", cuisineOther: "", description: "", video: "", website: "" });
+    setFormStartedAt(Date.now());
+  };
+
+  const handleSendResetCode = (e) => {
+    e.preventDefault();
+    setAuthError("");
+    const email = normalizeEmail(resetEmail);
+    if (!ownersDB.some((o) => o.email === email)) {
+      setAuthError(t.auth_error_invalid);
+      return;
+    }
+    const code = String(Math.floor(1000 + Math.random() * 9000));
+    setResetCode(code);
+    setAuthView("reset");
+  };
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    if (resetCodeInput !== resetCode) {
+      setAuthError(t.auth_error_code);
+      return;
+    }
+    const email = normalizeEmail(resetEmail);
+    const passwordHash = await sha256Hex(resetNewPassword);
+    setOwnersDB((prev) => prev.map((o) => (o.email === email ? { ...o, passwordHash } : o)));
+    setResetDone(true);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (looksLikeSpam(form.website, formStartedAt)) return;
+    if (!form.name || !form.city) return;
+    setSubmitted(true);
+  };
+
+  return (
+    <div dir={t.dir} style={{ background: PAPER, color: INK, minHeight: "100vh", paddingBottom: consentAccepted ? 0 : 56 }} className="font-sans wt-root">
+      <FontStyles />
+      <Header lang={lang} setLang={setLang} view={view} setView={setView} t={t} />
+
+      {view === "discover" ? (
+        <>
+          <DiscoverView
+            t={t} lang={lang}
+            query={query} setQuery={setQuery}
+            activeCuisine={activeCuisine} setActiveCuisine={setActiveCuisine}
+            localReviews={localReviews} setLocalReviews={setLocalReviews}
+            reviewDrafts={reviewDrafts} setReviewDrafts={setReviewDrafts}
+            recordView={recordView} recordContactClick={recordContactClick}
+          />
+          <footer className="px-4 py-6 text-xs max-w-3xl mx-auto" style={{ borderTop: `2px solid ${INK}`, color: "#666" }}>
+            <p>{t.footer_note}</p>
+            <button onClick={() => setView("admin")} className="mt-3 inline-flex items-center gap-1 text-10 transition-colors hover:text-ink"
+              style={{ color: "#ccc" }}>
+              <Shield size={10} /> Admin
+            </button>
+          </footer>
+        </>
+      ) : view === "admin" ? (
+        <AdminView
+          t={t} lang={lang}
+          adminAuthed={adminAuthed} adminPasswordInput={adminPasswordInput}
+          setAdminPasswordInput={setAdminPasswordInput} adminError={adminError}
+          handleAdminLogin={handleAdminLogin}
+          ownersDB={ownersDB} setOwnerApproval={setOwnerApproval}
+          setView={setView}
+          analytics={analytics}
+        />
+      ) : currentOwner ? (
+        <OwnerView
+          t={t} form={form} setForm={setForm}
+          handleSubmit={handleSubmit} submitted={submitted}
+          lang={lang} currentOwner={currentOwner} handleLogout={handleLogout}
+        />
+      ) : (
+        <AuthView
+          t={t} authView={authView} setAuthView={setAuthView}
+          authForm={authForm} setAuthForm={setAuthForm}
+          authError={authError} setAuthError={setAuthError}
+          handleSignup={handleSignup} handleLogin={handleLogin}
+          resetEmail={resetEmail} setResetEmail={setResetEmail}
+          handleSendResetCode={handleSendResetCode}
+          resetCode={resetCode} resetCodeInput={resetCodeInput}
+          setResetCodeInput={setResetCodeInput}
+          resetNewPassword={resetNewPassword} setResetNewPassword={setResetNewPassword}
+          handleResetPassword={handleResetPassword}
+          resetDone={resetDone} setResetDone={setResetDone}
+        />
+      )}
+
+      {!consentAccepted && <ConsentBanner t={t} onAccept={acceptConsent} />}
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+
+<script>
+(function() {
+  function showError(title, detail) {
+    var root = document.getElementById("root");
+    root.innerHTML = "";
+    var box = document.createElement("div");
+    box.style.cssText = "padding:16px;font-family:monospace;font-size:12px;color:#A8462F;white-space:pre-wrap;line-height:1.5;";
+    box.textContent = title + "\n\n" + (detail || "");
+    root.appendChild(box);
+  }
+  window.addEventListener("error", function(e) {
+    showError("JS Error: " + e.message, (e.error && e.error.stack) || (e.filename + ":" + e.lineno));
+  });
+  try {
+    if (typeof Babel === "undefined") throw new Error("Babel did not load (CDN blocked?)");
+    if (typeof React === "undefined") throw new Error("React did not load (CDN blocked?)");
+    if (typeof LucideReact === "undefined") throw new Error("lucide-react did not load (CDN blocked?)");
+    var srcEl = document.getElementById("app-source");
+    var code = Babel.transform(srcEl.textContent, { presets: ["react"] }).code;
+    (0, eval)(code);
+  } catch (err) {
+    showError("Startup error: " + err.message, err.stack);
+  }
+})();
+</script>
+</body>
+</html>
